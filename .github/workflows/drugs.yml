@@ -85,8 +85,13 @@ jobs:
                   "i": clean(it.get("intrcQesitm")),
                   "s": clean(it.get("seQesitm")),
                   "d": clean(it.get("depositMethodQesitm")),
+                  "m": (it.get("itemImage") or "").strip().replace("http://", "https://"),
               })
+          for o in out:
+              if not o["m"]:
+                  del o["m"]
           out = [o for o in out if o["n"]]
+          print("사진 있는 약:", sum(1 for o in out if o.get("m")), "개")
           out.sort(key=lambda o: o["n"])
           if len(out) < 100:
               sys.exit(f"받은 약이 {len(out)}개뿐이라 저장하지 않았습니다.")
