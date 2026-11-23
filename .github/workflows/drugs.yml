@@ -1,0 +1,114 @@
+name: 약 정보 업데이트
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 18 1 * *"   # 매달 2일 새벽 3시 17분(한국 시간)에 자동 업데이트
+
+permissions:
+  contents: write
+  pages: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 식약처 e약은요 데이터 받기
+        env:
+          DATA_GO_KR_KEY: ${{ secrets.DATA_GO_KR_KEY }}
+        run: |
+          python3 - <<'PY'
+          import html, json, os, re, sys, time, urllib.parse, urllib.request
+          from datetime import datetime, timezone, timedelta
+
+          key = os.environ.get("DATA_GO_KR_KEY", "").strip()
+          if not key:
+              sys.exit("DATA_GO_KR_KEY 비밀값이 없습니다. Settings > Secrets and variables > Actions 에 넣어 주세요.")
+          if "%" in key:
+              key = urllib.parse.unquote(key)
+
+          URL = "https://apis.data.go.kr/1471000/DrbEasyDrugInfoService/getDrbEasyDrugList"
+
+          def get(page):
+              q = urllib.parse.urlencode({"serviceKey": key, "pageNo": page, "numOfRows": 100, "type": "json"})
+              last = None
+              for _ in range(4):
+                  try:
+                      with urllib.request.urlopen(URL + "?" + q, timeout=60) as r:
+                          raw = r.read().decode("utf-8")
+                      data = json.loads(raw)
+                      data = data.get("response", data)
+                      code = str(data.get("header", {}).get("resultCode", "00"))
+                      if code not in ("00", "0"):
+                          raise RuntimeError("API 오류: " + json.dumps(data.get("header"), ensure_ascii=False))
+                      return data["body"]
+                  except Exception as e:
+                      last = e
+                      time.sleep(3)
+              sys.exit(f"{page}쪽을 받지 못했습니다: {last}")
+
+          def as_list(v):
+              if isinstance(v, dict):
+                  v = v.get("item", [])
+              if isinstance(v, dict):
+                  v = [v]
+              return list(v or [])
+
+          def clean(t):
+              if not t:
+                  return ""
+              t = html.unescape(str(t))
+              t = re.sub(r"<[^>]+>", " ", t)
+              return re.sub(r"\s+", " ", t).strip()
+
+          first = get(1)
+          total = int(first.get("totalCount", 0))
+          pages = (total + 99) // 100
+          print("전체", total, "개,", pages, "쪽")
+          items = as_list(first.get("items"))
+          for p in range(2, pages + 1):
+              body = get(p)
+              items += as_list(body.get("items"))
+              time.sleep(0.2)
+
+          out = []
+          for it in items:
+              out.append({
+                  "n": clean(it.get("itemName")),
+                  "c": clean(it.get("entpName")),
+                  "e": clean(it.get("efcyQesitm")),
+                  "u": clean(it.get("useMethodQesitm")),
+                  "w": clean(it.get("atpnWarnQesitm")),
+                  "a": clean(it.get("atpnQesitm")),
+                  "i": clean(it.get("intrcQesitm")),
+                  "s": clean(it.get("seQesitm")),
+                  "d": clean(it.get("depositMethodQesitm")),
+              })
+          out = [o for o in out if o["n"]]
+          out.sort(key=lambda o: o["n"])
+          if len(out) < 100:
+              sys.exit(f"받은 약이 {len(out)}개뿐이라 저장하지 않았습니다.")
+          today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y년 %m월 %d일")
+          with open("drugs.json", "w", encoding="utf-8") as f:
+              json.dump({"updated": today, "count": len(out), "items": out}, f, ensure_ascii=False, separators=(",", ":"))
+          print("저장 완료:", len(out), "개")
+          PY
+
+      - name: 저장소에 올리기
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add drugs.json
+          if git diff --cached --quiet; then
+            echo "바뀐 내용 없음"
+          else
+            git commit -m "약 정보 업데이트"
+            git push
+          fi
+
+      - name: 사이트 다시 만들기
+        run: |
+          curl -s -X POST -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/pages/builds" || true
