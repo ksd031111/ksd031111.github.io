@@ -220,7 +220,8 @@ const speakDrug = () => {
   const p = S.drug.sel; if (!p) return;
   if (!('speechSynthesis' in window)) { toast('이 휴대폰에서는 소리 읽기가 안 돼요'); return; }
   speechSynthesis.cancel();
-  const txt = [p.n, '어디에 먹나요. ' + shortText(p.e), '어떻게 먹나요. ' + shortText(p.u), '꼭 조심하세요. ' + shortText([p.w, p.a].filter(Boolean).join(' '))].join('. ');
+  const m = summarizeDrug(p);
+  const txt = [p.n, '어디에 먹는 약인가요. ' + m.use, '어떻게 먹나요. ' + m.how, '어르신이 꼭 확인할 것. ' + m.checks.map((c) => c.t + (c.tags ? ' ' + c.tags.join(', ') : '')).join(' ')].join('. ');
   const u = new SpeechSynthesisUtterance(txt); u.lang = 'ko-KR'; u.rate = 0.85;
   speechSynthesis.speak(u);
 };
@@ -291,6 +292,44 @@ const CENTERS = [
     ] }
 ];
 
+/* ---------- 약 정보 요약: 식약처 원문에서 어르신께 중요한 내용만 골라 쉬운 문장으로 ---------- */
+const splitS = (t) => (t || '').split(/(?<=[.])\s+/).map((x) => x.trim()).filter(Boolean);
+const josa = (w, a, b) => { const c = w.charCodeAt(w.length - 1); return w + ((c >= 0xAC00 && c <= 0xD7A3 && (c - 0xAC00) % 28) ? a : b); };
+const COND = [
+  [/고혈압/, '고혈압'], [/당뇨/, '당뇨병'], [/간장질환|간질환|간장애|간 질환|간기능/, '간 질환'],
+  [/신장|콩팥/, '콩팥 질환'], [/심장|심질환/, '심장 질환'], [/녹내장/, '녹내장'],
+  [/전립선|배뇨/, '전립선·소변 문제'], [/갑상선/, '갑상선 질환']
+];
+const SYM = ['발진', '두드러기', '가려움', '숨', '가슴답답', '어지러', '구역', '구토', '설사', '복통', '변비', '부종', '졸음', '두통'];
+const SYM_LABEL = { '숨': '숨이 참', '가슴답답': '가슴 답답함', '어지러': '어지러움', '부종': '부기' };
+const summarizeDrug = (p) => {
+  const warnS = splitS([p.w, p.a].filter(Boolean).join(' '));
+  const all = [p.w, p.a, p.i, p.s].join(' ');
+  const checks = [];
+  const old = warnS.find((s) => /고령자|노인/.test(s));
+  if (old) checks.push({ t: /복용하지 마/.test(old) && !/상의/.test(old) ? '어르신(고령자)은 이 약을 먹지 말라고 되어 있어요.' : '어르신(고령자)은 먹기 전에 의사·약사와 먼저 상의하세요.' });
+  const forbid = [], consult = [];
+  for (const s of warnS) {
+    for (const [re, name] of COND) if (re.test(s)) {
+      if (/상의/.test(s)) { if (!consult.includes(name)) consult.push(name); }
+      else if (/복용하지 마/.test(s)) { if (!forbid.includes(name)) forbid.push(name); }
+    }
+  }
+  const forbidOnly = forbid.filter((n) => !consult.includes(n));
+  if (forbidOnly.length) checks.push({ t: '이런 병이 있으면 이 약을 먹지 마세요.', tags: forbidOnly, strong: true });
+  if (consult.length) checks.push({ t: '이런 병이 있으면 먹기 전에 의사·약사와 상의하세요.', tags: consult });
+  if (/음주하지 마|술을 마시지 마/.test(all)) checks.push({ t: '약을 먹는 동안에는 술을 마시지 마세요.' });
+  else if (/음주|알코올/.test(all)) checks.push({ t: '술을 자주 드시는 분은 의사·약사와 먼저 상의하세요.' });
+  if (/운전/.test(all) && /졸음|졸릴/.test(all)) checks.push({ t: '졸릴 수 있어요. 먹은 뒤에는 운전이나 위험한 일을 하지 마세요.' });
+  else if (/졸음|졸릴/.test(all)) checks.push({ t: '졸릴 수 있어요.' });
+  if (/(해열진통제|감기약)[^.]*함께 복용하지 마/.test(p.i || '') || /다른 (해열진통제|감기약)[^.]*복용하지 마/.test(all)) checks.push({ t: '다른 감기약·진통제와 같이 먹지 마세요.' });
+  if (p.i) checks.push({ t: '다른 약을 드시고 있으면 약사에게 약봉투를 꼭 보여 주세요.' });
+  const stops = SYM.filter((w) => (p.s || '').includes(w)).slice(0, 5).map((w) => SYM_LABEL[w] || w);
+  const dm = [p.a, p.s, p.w].join(' ').match(/(\d+\s*(?:일|주|개월))\s*(?:정도|이상|간|동안)?[^.]*?(?:복용|사용)[^.]*?(?:개선|좋아지|낫)/);
+  const duration = dm ? `${dm[1].replace(/\s/g, '')} 정도 먹어도 좋아지지 않으면 멈추고 의사·약사와 상의하세요.` : '';
+  return { use: splitS(p.e)[0] || '', how: p.u && p.u.length <= 170 ? p.u : splitS(p.u).slice(0, 2).join(' '), checks, stops, duration };
+};
+
 /* ---------- 화면 ---------- */
 const head = (title, color = '') => `<div class="top"><button class="back" data-go="home" aria-label="처음 화면으로">${svg(I.back, 'currentColor', 26)}</button><h1 style="${color}">${title}</h1></div>`;
 const memoBox = (page) => `<details class="card"><summary style="font-weight:700;cursor:pointer;min-height:2.4rem;display:flex;align-items:center;gap:.4rem">${svg(I.memo, 'var(--purple)', 22)} 이 화면에서 불편한 점 적기</summary>
@@ -328,22 +367,34 @@ home: () => `
 medicine: () => {
   const D = S.drug;
   if (D.sel) {
-    const p = D.sel;
-    const box = (title, text, color, bg) => text ? `<div class="card" style="${bg ? 'background:' + bg + ';' : ''}border-color:${color}">
-<h2 style="color:${color};font-size:1.15rem">${title}</h2>
-<p style="font-size:1.1rem;line-height:1.6">${esc(shortText(text))}</p>
-${shortText(text) !== text ? `<details><summary class="small" style="cursor:pointer;min-height:2.2rem;display:flex;align-items:center">전체 내용 보기</summary><p class="sub" style="margin-top:.4rem">${esc(text)}</p></details>` : ''}
-</div>` : '';
+    const p = D.sel; const m = summarizeDrug(p);
+    const ck = svg(I.check, 'var(--warn)', 22);
+    const raw = [['효능', p.e], ['먹는 법', p.u], ['경고', p.w], ['주의사항', p.a], ['같이 먹으면 안 되는 것', p.i], ['부작용', p.s], ['보관법', p.d]].filter((r) => r[1]);
     return `<div class="top"><button class="back" id="drugBack" aria-label="검색 결과로">${svg(I.back, 'currentColor', 26)}</button><h1 style="font-size:1.35rem">${esc(p.n)}</h1></div>
-<p class="sub">${esc(p.c)} · 일반의약품</p>
+<p class="sub">${esc(p.c)} · 약국에서 사는 약(일반의약품)</p>
+${p.m ? `<figure style="margin:0;background:#fff;border:2px solid var(--line);border-radius:1.1rem;padding:.6rem;text-align:center"><img src="${esc(p.m)}" alt="${esc(p.n)} 사진" referrerpolicy="no-referrer" onerror="this.closest('figure').remove()" style="max-width:100%;max-height:220px;object-fit:contain"><figcaption class="small">약 모양 사진 (식약처)</figcaption></figure>` : ''}
 <button class="btn solid" id="drugSpeak" style="background:var(--blue);min-height:3.6rem;font-size:1.1rem">${svg('<path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/>', '#fff', 26)} 소리로 듣기</button>
-${box('어디에 먹나요', p.e, 'var(--blue)')}
-${box('어떻게 먹나요', p.u, 'var(--blue)')}
-${box('꼭 조심하세요', [p.w, p.a].filter(Boolean).join(' '), 'var(--warn)', 'var(--warnBg)')}
-${box('같이 먹으면 안 되는 것', p.i, 'var(--redInk)')}
-${box('이런 증상이 생기면 멈추고 상담하세요', p.s, 'var(--redInk)')}
-${box('보관은 이렇게', p.d, 'var(--green)')}
-<p class="small">출처: 식품의약품안전처 의약품개요정보(e약은요)${D.meta ? ' · ' + esc(D.meta) + ' 기준' : ''}. 약을 바꾸거나 끊기 전에는 꼭 의사·약사와 상의하세요.</p>
+<div class="card" style="border-color:var(--blue)">
+<h2 style="color:var(--blue)">어디에 먹는 약인가요?</h2>
+<p style="font-size:1.1rem;line-height:1.6">${esc(m.use)}</p>
+</div>
+<div class="card" style="border-color:var(--blue)">
+<h2 style="color:var(--blue)">어떻게 먹나요?</h2>
+<p style="font-size:1.1rem;line-height:1.6">${esc(m.how)}</p>
+</div>
+<div class="card" style="background:var(--warnBg);border-color:var(--warn)">
+<h2 style="color:var(--warn)">어르신이 꼭 확인할 것</h2>
+${(m.checks.length ? m.checks : [{ t: '먹기 전에 약사에게 내가 가진 병과 먹고 있는 약을 알려 주세요.' }]).map((c) => `<div style="display:flex;gap:.5rem;align-items:flex-start"><span style="flex:none;margin-top:.15rem">${ck}</span><div><p style="font-size:1.08rem;line-height:1.55;${c.strong ? 'font-weight:700' : ''}">${esc(c.t)}</p>${c.tags ? `<div style="display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.35rem">${c.tags.map((g) => `<span class="badge" style="background:var(--card);color:var(--ink);border:1px solid var(--warn);font-size:.9rem">${esc(g)}</span>`).join('')}</div>` : ''}</div></div>`).join('')}
+</div>
+<div class="card" style="border-color:var(--redInk)">
+<h2 style="color:var(--redInk)">이럴 땐 바로 멈추고 약사·의사에게</h2>
+${m.stops.length ? `<p style="font-size:1.08rem;line-height:1.55">먹은 뒤에 <b>${esc(m.stops.join(', '))}</b> 같은 증상이 생길 때</p>` : '<p style="font-size:1.08rem;line-height:1.55">먹은 뒤에 몸에 이상한 증상이 생길 때</p>'}
+${m.duration ? `<p style="font-size:1.08rem;line-height:1.55">${esc(m.duration)}</p>` : ''}
+</div>
+<details class="card"><summary style="font-weight:700;cursor:pointer;min-height:2.6rem;display:flex;align-items:center">식약처 설명서 원문 전체 보기</summary>
+${raw.map((r) => `<div><b>${r[0]}</b><p class="sub" style="margin-top:.2rem">${esc(r[1])}</p></div>`).join('')}
+</details>
+<p class="small">위 내용은 식품의약품안전처 'e약은요' 설명서${D.meta ? '(' + esc(D.meta) + ' 기준)' : ''}에서 어르신께 중요한 부분만 골라 쉽게 정리한 거예요. 정확한 내용은 원문을 확인하고, 약을 바꾸거나 끊기 전에는 꼭 의사·약사와 상의하세요.</p>
 ${memoBox('medicine')}`;
   }
   return `${head('약 정보 찾기')}
@@ -353,7 +404,7 @@ ${memoBox('medicine')}`;
 ${D.state === 'loading' ? '<div class="card"><p>약 정보를 불러오는 중이에요…</p></div>' : ''}
 ${D.state === 'nodata' ? '<div class="card" style="border-color:var(--warn)"><p>약 정보가 아직 준비되지 않았어요.</p><p class="small">관리자: GitHub의 Actions에서 "약 정보 업데이트"를 실행해 주세요.</p></div>' : ''}
 ${D.state === 'done' ? (D.list.length ? `<p class="sub">${D.list.length >= 20 ? '20개 이상 찾았어요. 이름을 더 적으면 줄어들어요.' : D.list.length + '개 찾았어요. 눌러서 자세히 보세요.'}</p>
-${D.list.slice(0, 20).map((p, i) => `<button class="card" data-drug="${i}" style="text-align:left;font:inherit;color:inherit;cursor:pointer;flex-direction:row;align-items:center;justify-content:space-between"><span><b style="font-size:1.1rem">${esc(p.n)}</b><br><span class="small">${esc(p.c)}</span></span>${svg(I.arrow, 'var(--blue)')}</button>`).join('')}` : `<div class="card"><p><b>'${esc(D.q)}'</b>을(를) 찾지 못했어요.</p><p class="small">여기에는 약국에서 사는 일반의약품만 있어요. 병원에서 처방받은 약은 약봉투의 설명을 보거나 약사에게 물어보세요.</p></div>`) : ''}
+${D.list.slice(0, 20).map((p, i) => `<button class="card" data-drug="${i}" style="text-align:left;font:inherit;color:inherit;cursor:pointer;flex-direction:row;align-items:center;justify-content:space-between"><span style="display:flex;gap:.7rem;align-items:center">${p.m ? `<img src="${esc(p.m)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" style="width:4.2rem;height:3rem;object-fit:contain;border-radius:.5rem;background:#fff;border:1px solid var(--line);flex:none">` : ''}<span><b style="font-size:1.1rem">${esc(p.n)}</b><br><span class="small">${esc(p.c)}</span></span></span>${svg(I.arrow, 'var(--blue)')}</button>`).join('')}` : `<div class="card"><p><b>'${esc(D.q)}'</b>을(를) 찾지 못했어요.</p><p class="small">여기에는 약국에서 사는 일반의약품만 있어요. 병원에서 처방받은 약은 약봉투의 설명을 보거나 약사에게 물어보세요.</p></div>`) : ''}
 ${D.state === 'idle' ? `<div class="card"><h2>이런 내용을 쉽게 알려드려요</h2>
 <p>어디에 먹나요 · 어떻게 먹나요 · 꼭 조심할 점 · 같이 먹으면 안 되는 것 · 보관법</p>
 <p class="small">식품의약품안전처 'e약은요' 정보예요. 약국에서 사는 일반의약품만 찾을 수 있어요.</p></div>` : ''}
