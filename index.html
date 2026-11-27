@@ -302,7 +302,9 @@ const speakDrug = () => {
   if (!('speechSynthesis' in window)) { toast('이 휴대폰에서는 소리 읽기가 안 돼요'); return; }
   speechSynthesis.cancel();
   const m = summarizeDrug(p);
-  const txt = [p.n, '어디에 먹는 약인가요. ' + m.use, '어떻게 먹나요. ' + m.how, '어르신이 꼭 확인할 것. ' + m.checks.map((c) => c.t + (c.tags ? ' ' + c.tags.join(', ') : '')).join(' ')].join('. ');
+  const d = m.dose;
+  const how = d.rows.length >= 2 ? d.rows.map(([k, v]) => `${k} ${v}`).join('. ') : d.fallback;
+  const txt = [p.n, (m.kind ? m.kind + '이에요. ' : '') + (m.uses.length ? m.uses.slice(0, 8).join(', ') + '에 써요' : m.use), (d.topical ? '쓰는 법. ' : '먹는 법. ') + how + (d.note ? '. ' + d.note : ''), '어르신이 꼭 확인할 것. ' + m.checks.map((c) => c.t + (c.tags ? ' ' + c.tags.join(', ') : '')).join(' ')].join('. ');
   const u = new SpeechSynthesisUtterance(txt); u.lang = 'ko-KR'; u.rate = 0.85;
   speechSynthesis.speak(u);
 };
@@ -415,7 +417,103 @@ const summarizeDrug = (p) => {
   const stops = SYM.filter((w) => (p.s || '').includes(w)).slice(0, 5).map((w) => SYM_LABEL[w] || w);
   const dm = [p.a, p.s, p.w].join(' ').match(/(\d+\s*(?:일|주|개월))\s*(?:정도|이상|간|동안)?[^.]*?(?:복용|사용)[^.]*?(?:개선|좋아지|낫)/);
   const duration = dm ? `${dm[1].replace(/\s/g, '')} 정도 먹어도 좋아지지 않으면 멈추고 의사·약사와 상의하세요.` : '';
-  return { use: splitS(p.e)[0] || '', how: p.u && p.u.length <= 170 ? p.u : splitS(p.u).slice(0, 2).join(' '), checks, stops, duration };
+  const uses = easyUses(p.e);
+  return { kind: drugKind(p), uses, use: uses.length ? '' : easyText(splitS(p.e)[0] || ''), dose: easyDose(p.u), checks, stops, duration };
+};
+
+/* ---------- 어려운 말을 쉬운 말로 ---------- */
+const EASY = [
+  [/뽑음\s*후/g, '뽑은 뒤'], [/상처\s*후의?/g, '다친 뒤'], [/수술\s*후/g, '수술 뒤'], [/특발성\s*/g, ''],
+  [/감염성습진양피부염/g, '세균 감염된 피부염'], [/농가진/g, '고름 물집(농가진)'], [/모낭염/g, '털구멍 염증(모낭염)'],
+  [/동통/g, '통증'], [/월경곤란증|월경통/g, '생리통'], [/염좌통|염좌|좌상/g, '삔 곳'], [/타박통|타박상/g, '부딪혀 다친 곳'], [/골절통/g, '뼈 다친 곳 통증'],
+  [/인후통/g, '목 아픔'], [/두통/g, '머리 아픔'], [/치통/g, '이 아픔'], [/요통|허리통/g, '허리 아픔'], [/견통|어깨결림/g, '어깨 아픔'],
+  [/관절통/g, '관절(뼈마디) 아픔'], [/근육통/g, '근육 아픔'], [/외상/g, '상처'], [/귀의 통증/g, '귀 아픔'],
+  [/발열/g, '열'], [/해열/g, '열 내림'], [/오한/g, '춥고 떨림'], [/진통/g, '통증 줄임'], [/소염/g, '염증 가라앉힘'], [/종창/g, '부기'],
+  [/소화불량/g, '소화 안 됨'], [/식욕부진|식욕감퇴/g, '입맛 없음'], [/소화촉진/g, '소화 도움'], [/(위부|복부)(팽만감?|불쾌감)/g, '배 더부룩함'],
+  [/위산과다/g, '속쓰림'], [/위통/g, '배(위) 아픔'], [/신트림/g, '신물 트림'], [/구역/g, '메스꺼움'], [/구토/g, '토함'], [/장내이상발효/g, '장 속 가스'],
+  [/알레르기성 비염/g, '알레르기 코 증상'], [/알레르기성 결막염/g, '알레르기 눈 증상'], [/피부가려움증|소양증/g, '피부 가려움'],
+  [/치은염/g, '잇몸 염증'], [/치주염/g, '잇몸병(풍치)'], [/자양강장/g, '기운 회복'], [/육체피로/g, '몸 피로'], [/골관절염|퇴행성관절염/g, '관절이 닳아 아픔(퇴행성 관절염)'],
+  [/환부|질환 부위/g, '아픈 곳'], [/도포/g, '바름'], [/적당량/g, '알맞은 양'], [/수회/g, '여러 번'], [/부착/g, '붙임'], [/투여/g, '사용'],
+  [/복용합니다/g, '먹어요'], [/복용/g, '먹기'], [/사용합니다/g, '써요']
+];
+const easyText = (t) => EASY.reduce((s, [re, to]) => s.replace(re, to), t || '');
+/* '이 약은 ○○, △△에 사용합니다' → ['○○', '△△'] (괄호 속 쉬운 말이 있으면 그걸 써요) */
+const easyUses = (e) => {
+  let t = (e || '').replace(/^이 약은\s*/, '').replace(/\s*(에|의)\s*(사용|쓰)[^]*$/, '');
+  t = t.replace(/경[·ㆍ]중등도\s*/g, '').replace(/[가-힣]+성\s*및\s*[가-힣]+성\s+/g, '');
+  for (let n = 0; n < 6 && /\([^()]*\)/.test(t); n++) { /* 가장 안쪽 괄호부터 풀어요 */
+    t = t.replace(/([가-힣]*)\(([^()]*)\)(통)?/g, (all, before, inner, tong) => {
+      if (/[,，]/.test(inner)) return /증상$/.test(before) ? `${before.replace(/의?\s*(여러|제)?\s*증상$/, '')}, ${inner}` : before;
+      if (/[a-zA-Z\d]/.test(inner) || inner.length > 12) return before + (tong || '');
+      return tong ? `${inner} 통증` : inner; /* 요(허리)통 → 허리 통증, 염좌통(삔 통증) → 삔 통증 */
+    });
+  }
+  t = t.replace(/([가-힣]+)(와|과)\s*\1에\s*수반하는\s*/g, '$1, '); /* 변비와 변비에 수반하는 ○○ → 변비, ○○ */
+  t = t.replace(/의\s*증상의?\s*/g, ', ').replace(/(시)?의\s*(진통|소염|해열|완화|보조치료|치료|개선)([ㆍ·]\s*(진통|소염|해열|완화))*(과|와)?/g, ', ');
+  const out = [];
+  for (let c of t.split(/\s*(?:,|ㆍ|·|\s및\s|\s또는\s)\s*/)) {
+    c = easyText(c.replace(/^(여러|각종|다음)\s*/, '').replace(/(의|에|으로 인한|로 인한)$/, '').trim());
+    c = c.replace(/^감기로 인한 /, '감기 ').replace(/^.+?(으로|로) 인한\s*/, '').replace(/^.*수반하는\s*/, '').replace(/의?\s*(여러|각종)$/, '').trim();
+    /* 짝이 안 맞는 괄호 조각, '…과/와'로 끝나는 말 정리 */
+    if ((c.match(/\(/g) || []).length > (c.match(/\)/g) || []).length) c = c.replace(/\((?![^(]*\))[^]*$/, '').trim();
+    if ((c.match(/\)/g) || []).length > (c.match(/\(/g) || []).length) c = c.replace(/^[^(]*?\)/, (s) => s.replace(')', '')).trim();
+    c = c.replace(/\s*(의\s*)?(보급|공급)(과|와)?$/, '').replace(/(과|와)$/, '').replace(/^감기의 여러 증상$/, '감기').trim();
+    if (/균$|박테륨|클로스트리듐/.test(c)) continue; /* 세균 이름은 빼요 */
+    if (/^[A-Za-z]\d*$|^[가-힣]?\s*$/.test(c)) continue; /* 'B1' 같은 비타민 기호 조각 */
+    if (c.length >= 2 && c.length <= 22 && !out.includes(c)) out.push(c);
+  }
+  return out;
+};
+/* 무슨 약인지 한마디로 */
+const drugKind = (p) => {
+  const e = p.e || '', u = p.u || '';
+  const how = /바르|바릅|문지|도포/.test(u) ? '바르는 ' : /붙|부착/.test(u) ? '붙이는 ' : /점안|눈에 넣/.test(u) ? '눈에 넣는 ' : /뿌리|분무/.test(u) ? '뿌리는 ' : '';
+  const pain = /해열|발열/.test(e) && !how ? '진통·해열제 (아픔·열 내림)' : '진통제 (아픔 줄임)';
+  const K = [[/감기/, '감기약', /콧물|코막힘|기침|가래|재채기/], [/소화|체함|위산|속쓰림|위통|위부/, '소화제·위장약'], [/변비/, '변비약'], [/설사|지사/, '설사약'], [/무좀|백선/, '무좀약'],
+    [/두통|치통|생리|월경|해열|발열|진통|통증|신경통|관절|근육통/, pain], [/알레르기|두드러기|비염/, '알레르기약'], [/여드름|습진|피부|상처|화상/, '피부약'],
+    [/눈|안구|결막/, '눈약'], [/잇몸|치주|치은/, '잇몸약'], [/비타민|영양|자양|피로/, '영양제']];
+  /* 감기약은 콧물·기침 같은 감기 증상이 있을 때만 (타이레놀처럼 '감기로 인한 열'만 있으면 진통제) */
+  if (how === '눈에 넣는 ') return '안약 (눈에 넣는 약)';
+  if (/비타민|자양강장|영양\s*보급|의 보급/.test(splitS(e)[0] || '')) return how + '영양제';
+  const k = K.find(([re, , also]) => re.test(e) && (!also || also.test(e)));
+  return k ? how + k[1] : how ? how + '약' : '';
+};
+/* 먹는 법 → '한 번에 / 하루에 / 언제 / 하루 최대' */
+const UNIT = '(?:정|캡슐|포|병|팩|mL|ml|g|방울|매|알|스푼|회분|앰플|환|cm)';
+const easyDose = (u) => {
+  u = u || '';
+  const topical = /바르|바릅|문지|도포|붙|부착|점안|뿌리|분무/.test(u);
+  const adultAt = Math.max(0, u.search(/성인|만?\s*1[25]세\s*이상/));
+  const onceRe = new RegExp(`1회\\s*([\\d/~.\\s]+${UNIT})`, 'g');
+  const onces = [...u.matchAll(onceRe)];
+  const distinct = new Set(onces.map((m) => m[1].replace(/\s/g, '')));
+  const complex = distinct.size > 1 && ((u.match(/성인/g) || []).length > 1 || /체중|kg당/.test(u));
+  const o = onces.find((m) => m.index >= adultAt) || onces[0];
+  const once = o ? o[1].replace(/\s/g, '') : topical && /적당량/.test(u) ? '알맞은 양' : '';
+  const dm = u.match(/1일\s*([\d~\-]+|수)\s*회(까지)?/);
+  const daily = dm ? (dm[1] === '수' ? '여러 번' : `${dm[1]}번`) + (dm[2] ? '까지' : '') : '';
+  const when = [];
+  if (/식후\s*30\s*분/.test(u)) when.push('밥 먹고 30분 뒤'); else if (/식후/.test(u)) when.push('밥 먹은 뒤');
+  if (/식전/.test(u)) when.push('밥 먹기 전');
+  if (/식간/.test(u)) when.push('식사와 식사 사이');
+  if (/취침\s*(전|시)|자기 전/.test(u)) when.push('자기 전');
+  if (/필요시|필요할 때/.test(u)) when.push('아플 때만');
+  const im = u.match(/(\d+(?:\s*~\s*\d+)?)\s*시간\s*(마다|이상)/);
+  const gap = im ? (im[2] === '마다' ? `${im[1].replace(/\s/g, '')}시간마다` : `${im[1]}시간 이상 띄우기`) : '';
+  const mm = u.match(new RegExp(`1일\\s*(?:최대|최고)\\s*([\\d,~]+\\s*${UNIT})`));
+  const rows = [];
+  if (complex) return { rows, topical, note: '병이나 나이에 따라 먹는 양이 달라요. 약사에게 꼭 물어보세요.', adult: false };
+  if (once) rows.push(['한 번에', once]);
+  if (daily) rows.push(['하루에', daily]);
+  if (when.length) rows.push(['언제', when.join(' · ')]);
+  if (topical && /아픈 곳|환부|질환 부위/.test(easyText(u) + u)) rows.push(['어디에', '아픈 곳에']);
+  if (gap) rows.push(['간격', gap]);
+  if (mm) rows.push(['하루 최대', mm[1].replace(/\s/g, '') + '까지', true]);
+  const notes = [];
+  if (/공복/.test(u) && /피/.test(u)) notes.push('빈속에는 먹지 마세요.');
+  if (/씹지 말/.test(u)) notes.push('씹지 말고 삼키세요.');
+  if (/흔들어/.test(u)) notes.push('먹기 전에 흔들어 주세요.');
+  return { rows, topical, adult: /성인|1[25]세\s*이상/.test(u) && /세/.test(u.replace(/1[25]세\s*이상/, '')), note: notes.join(' '), fallback: rows.length < 2 ? easyText(splitS(u)[0] || u) : '' };
 };
 
 /* ---------- 화면 ---------- */
@@ -462,12 +560,18 @@ medicine: () => {
 ${p.m ? `<figure style="margin:0;background:#fff;border:2px solid var(--line);border-radius:1.1rem;padding:.6rem;text-align:center"><img src="${esc(p.m)}" alt="${esc(p.n)} 사진" referrerpolicy="no-referrer" onerror="this.closest('figure').remove()" style="max-width:100%;max-height:220px;object-fit:contain"><figcaption class="small">약 모양 사진 (식약처)</figcaption></figure>` : ''}
 <button class="btn solid" id="drugSpeak" style="background:var(--blue);min-height:3.6rem;font-size:1.1rem">${svg('<path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/>', '#fff', 26)} 소리로 듣기</button>
 <div class="card" style="border-color:var(--blue)">
-<h2 style="color:var(--blue)">어디에 먹는 약인가요?</h2>
-<p style="font-size:1.1rem;line-height:1.6">${esc(m.use)}</p>
+<h2 style="color:var(--blue)">${m.dose.topical ? '어디에 쓰는 약인가요?' : '어디에 먹는 약인가요?'}</h2>
+${m.kind ? `<p style="font-size:1.3rem;font-weight:900">${esc(m.kind)}</p>` : ''}
+${/영양제/.test(m.kind) && m.uses.length ? '<p class="sub">이럴 때 영양을 보충해요</p>' : ''}
+${m.uses.length ? `<div style="display:flex;flex-wrap:wrap;gap:.4rem">${m.uses.slice(0, 8).map((u) => `<span style="font-size:1.05rem;font-weight:700;background:var(--blueBg);color:var(--ink);border-radius:.6rem;padding:.3rem .7rem">${esc(u)}</span>`).join('')}${m.uses.length > 8 ? `<span style="font-size:1.05rem;padding:.3rem .2rem;color:var(--sub)">외 ${m.uses.length - 8}가지</span>` : ''}</div>` : `<p style="font-size:1.1rem;line-height:1.6">${esc(m.use)}</p>`}
 </div>
 <div class="card" style="border-color:var(--blue)">
-<h2 style="color:var(--blue)">어떻게 먹나요?</h2>
-<p style="font-size:1.1rem;line-height:1.6">${esc(m.how)}</p>
+<h2 style="color:var(--blue)">${m.dose.topical ? '어떻게 쓰나요?' : '어떻게 먹나요?'}</h2>
+${m.dose.rows.length >= 2 ? `<div style="display:flex;flex-direction:column">${m.dose.rows.map(([k, v, strong]) => `<div style="display:flex;gap:.8rem;align-items:baseline;padding:.45rem 0;border-top:1px solid var(--line)"><span class="sub" style="flex:none;width:4.6rem;font-weight:700">${k}</span><span style="font-size:1.25rem;font-weight:900;${strong ? 'color:var(--redInk)' : ''}">${esc(v)}</span></div>`).join('')}</div>` : ''}
+${m.dose.rows.length < 2 && m.dose.fallback ? `<p style="font-size:1.1rem;line-height:1.6">${esc(m.dose.fallback)}</p>` : ''}
+${m.dose.note ? `<p style="font-size:1.05rem;font-weight:700;color:var(--warn)">${esc(m.dose.note)}</p>` : ''}
+${m.dose.adult ? '<p class="small">어른(성인) 기준이에요. 아이는 양이 달라요.</p>' : ''}
+<details><summary class="small" style="cursor:pointer;min-height:2.2rem;display:flex;align-items:center">설명서 그대로 보기</summary><p class="sub" style="margin-top:.3rem">${esc(p.u)}</p></details>
 </div>
 <div class="card" style="background:var(--warnBg);border-color:var(--warn)">
 <h2 style="color:var(--warn)">어르신이 꼭 확인할 것</h2>
@@ -726,8 +830,7 @@ document.addEventListener('input', (e) => {
   const k = e.target.dataset && e.target.dataset.memo;
   if (k) { const m = store.get('memo', {}); m[k] = e.target.value; store.set('memo', m); }
 });
-onNav();
-}
+onNav();}
 </script>
 </body>
 </html>
