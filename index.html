@@ -39,6 +39,7 @@ button,a.btn{font:inherit;cursor:pointer;text-decoration:none}
 .btn,.chip{min-height:3rem;border-radius:.8rem;border:2px solid var(--line);background:var(--card);color:var(--ink);font-weight:700;font-size:.95rem;display:flex;align-items:center;justify-content:center;gap:.4rem;padding:.3rem .6rem;text-align:center}
 .solid{border:0;color:#fff}
 .go{display:flex;align-items:center;justify-content:space-between;gap:.6rem;border-radius:1rem;padding:.9rem 1rem;min-height:4rem;color:#fff;text-decoration:none;border:0;width:100%;text-align:left}
+.go svg,.sos svg,.btn svg{flex:none}
 .go b{display:block;font-size:1.1rem;font-weight:900}.go small{font-size:.85rem;opacity:.9}
 input,textarea{font:inherit;font-size:max(16px,1.1rem);color:var(--ink);background:var(--card);border:2px solid var(--blue);border-radius:.8rem;padding:.7rem .9rem;width:100%}
 textarea{min-height:6rem;resize:vertical;border-color:var(--line)}
@@ -92,8 +93,8 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
 };
 const toast = (t) => { const el = $('#toast'); el.textContent = t; el.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('show'), 2400); };
-const S = { center: 'dong', bk: { step: 1, dept: null, day: null, time: null, hosp: null }, drug: { q: store.get('drug', ''), state: 'idle', list: [], sel: null, meta: '' }, dept: '내과', day: 1, time: 1, booked: false, cat: '전체', big: store.get('big', false),
-  pos: null, locState: 'idle', area: store.get('area', ''), results: [], searching: false, resultFor: '', er: [], erState: 'idle' };
+const S = { center: 'dong', bk: { step: 1, dept: null, day: null, time: null, hosp: null }, drug: { q: store.get('drug', ''), state: 'idle', list: [], sel: null, meta: '' }, dept: '내과', cat: '전체', big: store.get('big', false),
+  pos: null, locState: 'idle', area: store.get('area', ''), results: [], searching: false, resultFor: '', mapFail: false, er: [], erState: 'idle', erFail: false };
 document.documentElement.classList.toggle('big', S.big);
 
 /* ---------- 위치와 카카오 장소 검색 ---------- */
@@ -116,8 +117,9 @@ const askLocation = async () => {
 const searchKakao = async (keyword, opts) => {
   await loadKakao();
   const ps = new kakao.maps.services.Places();
-  return new Promise((res) => {
-    const cb = (data, status) => res(status === kakao.maps.services.Status.OK ? data : []);
+  return new Promise((res, rej) => {
+    const St = kakao.maps.services.Status;
+    const cb = (data, status) => status === St.OK ? res(data) : status === St.ZERO_RESULT ? res([]) : rej(new Error('search'));
     const o = { size: 15 };
     if (opts.pos) { o.location = new kakao.maps.LatLng(opts.pos.lat, opts.pos.lng); o.radius = opts.radius || 3000; o.sort = kakao.maps.services.SortBy.DISTANCE; }
     if (opts.category) ps.categorySearch(opts.category, cb, o);
@@ -136,22 +138,9 @@ const searchPlaces = async () => {
       list = await searchKakao(`${S.area} ${dept}`, {});
     }
     if (dept !== '약국' && dept !== '보건소') list = list.filter((p) => /병원|의원|의료|한의|치과|보건/.test(p.category_name || ''));
-    S.results = list.slice(0, 10); S.resultFor = dept;
-  } catch (e) { S.results = []; S.resultFor = dept; toast('지도를 불러오지 못했어요. 인터넷 연결을 확인하세요'); }
+    S.results = list.slice(0, 10); S.resultFor = dept; S.mapFail = false;
+  } catch (e) { S.results = []; S.resultFor = dept; S.mapFail = true; }
   S.searching = false; render();
-};
-/* 교육 장소(팔공노인복지관) 기준으로 찾기 */
-const usePalgong = async () => {
-  S.locState = 'asking'; render();
-  try {
-    const r = await searchKakao('팔공노인복지관', {});
-    const hit = r.find((p) => /동북로 393/.test(p.road_address_name || '')) || r[0];
-    if (!hit) throw new Error('none');
-    S.pos = { lat: +hit.y, lng: +hit.x }; S.locState = 'palgong';
-  } catch (e) { S.locState = 'idle'; toast('팔공노인복지관 위치를 찾지 못했어요'); }
-  S.resultFor = ''; S.erState = 'idle';
-  render();
-  if (S.pos) { if (current() === 'emergency') searchER(); else searchPlaces(); }
 };
 const searchER = async () => {
   if (!S.pos) return;
@@ -159,8 +148,8 @@ const searchER = async () => {
   try {
     const list = await searchKakao('응급실', { pos: S.pos, radius: 20000 });
     S.er = list.filter((p) => /병원|의료/.test(p.category_name || '')).slice(0, 5);
-    S.erState = 'done';
-  } catch (e) { S.er = []; S.erState = 'done'; }
+    S.erState = 'done'; S.erFail = false;
+  } catch (e) { S.er = []; S.erState = 'done'; S.erFail = true; }
   render();
 };
 const fmtDist = (m) => { m = +m; if (!m && m !== 0) return ''; const walk = Math.max(1, Math.round(m / 60)); const d = m < 1000 ? `${m}m` : `${(m / 1000).toFixed(1)}km`; return m <= 2000 ? `걸어서 약 ${walk}분 · ${d}` : `${d}`; };
@@ -230,6 +219,10 @@ const speakDrug = () => {
 /* ---------- 병원 예약 (교육용 가상 병원) ---------- */
 const BK_DEPTS = [['내과', '감기·혈압·당뇨'], ['정형외과', '무릎·허리·어깨'], ['안과', '눈 침침·백내장'], ['치과', '이·틀니'], ['이비인후과', '귀·코·목'], ['한의원', '침·한약'], ['피부과', '가려움·피부'], ['가정의학과', '어디로 갈지 모를 때']];
 const BK_TIMES = ['오전 9시', '오전 10시', '오전 11시', '오후 2시', '오후 3시', '오후 4시'];
+const BK_HOURS = [9, 10, 11, 14, 15, 16];
+/* 오늘이면 이미 지난 시간(지금부터 30분 안쪽 포함)은 고를 수 없어요 */
+const bkPast = (day, ti) => { if (day !== 0) return false; const n = new Date(); return BK_HOURS[ti] * 60 <= n.getHours() * 60 + n.getMinutes() + 30; };
+const bkDayFull = (day) => BK_HOURS.every((_, ti) => bkPast(day, ti));
 const bkDays = () => {
   const W = ['일', '월', '화', '수', '목', '금', '토'];
   const out = []; const d = new Date();
@@ -249,7 +242,7 @@ const bkHospitals = () => {
   const notes = ['엘리베이터 있음 · 주차 가능', '1층 · 계단 없음', '토요일 오전 진료', '대기 적음 · 주차 가능'];
   const key = B.dept + (bkDays()[B.day] || {}).key + B.time;
   const shut = bkHash(key) % 4;
-  return names.map((n, i) => ({ name: `${n}${suffix}`, dist: dists[i], doctor: docs[i], note: notes[i], open: i !== shut || i === 0 }));
+  return names.map((n, i) => ({ name: `${n}${suffix}`, dist: dists[i], doctor: docs[i], note: notes[i], open: i !== shut }));
 };
 
 
@@ -311,18 +304,21 @@ const summarizeDrug = (p) => {
   const forbid = [], consult = [];
   for (const s of warnS) {
     for (const [re, name] of COND) if (re.test(s)) {
-      if (/상의/.test(s)) { if (!consult.includes(name)) consult.push(name); }
-      else if (/복용하지 마/.test(s)) { if (!forbid.includes(name)) forbid.push(name); }
+      if (/복용하지 마/.test(s)) { if (!forbid.includes(name)) forbid.push(name); }
+      else if (/상의/.test(s)) { if (!consult.includes(name)) consult.push(name); }
     }
   }
-  const forbidOnly = forbid.filter((n) => !consult.includes(n));
-  if (forbidOnly.length) checks.push({ t: '이런 병이 있으면 이 약을 먹지 마세요.', tags: forbidOnly, strong: true });
-  if (consult.length) checks.push({ t: '이런 병이 있으면 먹기 전에 의사·약사와 상의하세요.', tags: consult });
+  /* 원문 어디선가 "복용하지 마십시오"라고 한 병은 "상의"보다 강한 경고를 우선해요 */
+  const consultOnly = consult.filter((n) => !forbid.includes(n));
+  if (forbid.length) checks.push({ t: '이런 병이 있으면 이 약을 먹지 마세요.', tags: forbid, strong: true });
+  if (consultOnly.length) checks.push({ t: '이런 병이 있으면 먹기 전에 의사·약사와 상의하세요.', tags: consultOnly });
+  if (/아세트아미노펜[^.]*(포함|함유)[^.]*함께 복용하지 마/.test(all)) checks.push({ t: '아세트아미노펜(타이레놀 성분)이 든 다른 약과 같이 먹지 마세요. 감기약·진통제에 많이 들어 있어 겹치면 간이 상할 수 있어요.', strong: true });
   if (/음주하지 마|술을 마시지 마/.test(all)) checks.push({ t: '약을 먹는 동안에는 술을 마시지 마세요.' });
   else if (/음주|알코올/.test(all)) checks.push({ t: '술을 자주 드시는 분은 의사·약사와 먼저 상의하세요.' });
   if (/운전/.test(all) && /졸음|졸릴/.test(all)) checks.push({ t: '졸릴 수 있어요. 먹은 뒤에는 운전이나 위험한 일을 하지 마세요.' });
   else if (/졸음|졸릴/.test(all)) checks.push({ t: '졸릴 수 있어요.' });
-  if (/(해열진통제|감기약)[^.]*함께 복용하지 마/.test(p.i || '') || /다른 (해열진통제|감기약)[^.]*복용하지 마/.test(all)) checks.push({ t: '다른 감기약·진통제와 같이 먹지 마세요.' });
+  const apap = checks.some((c) => /아세트아미노펜/.test(c.t));
+  if (!apap && (/(해열진통제|감기약)[^.]*함께 복용하지 마/.test(p.i || '') || /다른 (해열진통제|감기약)[^.]*복용하지 마/.test(all))) checks.push({ t: '다른 감기약·진통제와 같이 먹지 마세요.' });
   if (p.i) checks.push({ t: '다른 약을 드시고 있으면 약사에게 약봉투를 꼭 보여 주세요.' });
   const stops = SYM.filter((w) => (p.s || '').includes(w)).slice(0, 5).map((w) => SYM_LABEL[w] || w);
   const dm = [p.a, p.s, p.w].join(' ').match(/(\d+\s*(?:일|주|개월))\s*(?:정도|이상|간|동안)?[^.]*?(?:복용|사용)[^.]*?(?:개선|좋아지|낫)/);
@@ -339,7 +335,6 @@ const ext = (href, cls, style, inner) => `<a class="${cls}" style="${style}" hre
 const call = (num, label, bg) => `<button class="go" style="background:${bg}" data-call="${num}" data-label="${label}"><span><b>${label}</b><small>번호: <span class="num">${num}</span></small></span>${svg(I.phone, '#fff')}</button>`;
 const locBox = (what) => {
   if (S.locState === 'ok') return `<p class="sub" style="display:flex;gap:.4rem;align-items:center">${svg(I.pin, 'var(--green)', 22)} 지금 내 위치 근처의 ${what}이에요</p>`;
-  if (S.locState === 'palgong') return `<div class="card" style="border-color:var(--purple)"><p style="display:flex;gap:.4rem;align-items:center">${svg(I.pin, 'var(--purple)', 22)} <b>팔공노인복지관 근처</b>의 ${what}이에요</p><p class="small">대구 동구 동북로 393 기준</p><button class="btn" data-loc>내 위치로 바꾸기</button></div>`;
   if (S.locState === 'asking') return `<div class="card"><p>위치를 확인하는 중이에요…</p><p class="small">"위치 정보를 허용할까요?"라고 물으면 <b>허용</b>을 눌러 주세요.</p></div>`;
   return `<div class="card" style="border-color:var(--green)">
 <button class="btn solid" data-loc style="background:var(--green);min-height:3.8rem;font-size:1.15rem">${svg(I.pin, '#fff', 26)} 내 위치로 찾기</button>
@@ -420,7 +415,9 @@ hospital: () => {
 <div class="grid3">${depts.map((d) => `<button class="chip" style="${S.dept === d ? 'background:var(--green);border-color:var(--green);color:#fff' : ''}" data-dept="${d}" aria-pressed="${S.dept === d}">${d}</button>`).join('')}</div>
 ${locBox(S.dept)}
 ${S.searching ? '<div class="card"><p>찾는 중이에요…</p></div>' : ''}
-${has ? (S.results.length ? `<div id="map" role="img" aria-label="지도: 내 위치와 찾은 곳"></div>${S.results.map((p, i) => placeCard(p, i, 'var(--green)')).join('')}` : `<div class="card"><p>가까운 곳에서 ${esc(S.dept)}을(를) 찾지 못했어요.</p><p class="small">다른 진료과를 누르거나 동네 이름으로 찾아보세요.</p></div>`) : ''}
+${has && S.mapFail ? `<div class="card" style="border-color:var(--warn)"><p><b>지도 서비스를 지금 불러오지 못했어요.</b></p><p class="small">근처에 ${esc(josa(S.dept, '이', '가'))} 없는 게 아니에요. 인터넷 연결을 확인하고 다시 눌러 보거나, 아래 카카오맵에서 찾아보세요.</p>
+${ext(`https://map.kakao.com/link/search/${encodeURIComponent((S.area ? S.area + ' ' : '') + S.dept)}`, 'btn solid', 'background:var(--green)', `카카오맵에서 ${esc(S.dept)} 찾기`)}</div>` : ''}
+${has && !S.mapFail ? (S.results.length ?`<div id="map" role="img" aria-label="지도: 내 위치와 찾은 곳"></div>${S.results.map((p, i) => placeCard(p, i, 'var(--green)')).join('')}` : `<div class="card"><p>가까운 곳에서 ${esc(josa(S.dept, '을', '를'))} 찾지 못했어요.</p><p class="small">다른 진료과를 누르거나 동네 이름으로 찾아보세요.</p></div>`) : ''}
 ${ext('https://www.e-gen.or.kr', 'go', 'background:var(--ink)', `<span><b>밤·휴일 문 연 병원·약국</b><small>응급의료포털 E-Gen</small></span>${svg(I.arrow, '#fff')}`)}
 <p class="small">장소 정보: 카카오맵. 진료시간은 바뀔 수 있으니 가기 전에 전화로 확인하세요.</p>
 ${memoBox('hospital')}`;
@@ -430,18 +427,19 @@ emergency: () => `${head('응급실 찾기', 'color:var(--redInk)')}
 <button class="sos" data-call="119" data-label="119">${svg(I.phone, '#fff', 40)}<span><b>119 전화하기</b><span>숨쉬기 힘들 때 · 가슴이 아플 때 · 쓰러졌을 때</span></span></button>
 <p class="small">누르면 한 번 더 물어본 뒤에 전화를 걸어요.</p>
 <h2>가까운 응급실</h2>
-${S.locState === 'ok' ? '' : S.locState === 'palgong' ? '<p class="sub">팔공노인복지관 근처 응급실이에요 · <button class="btn" data-loc style="display:inline-flex;min-height:2.6rem">내 위치로 바꾸기</button></p>' : `<button class="btn solid" data-loc style="background:var(--ink);min-height:3.8rem;font-size:1.1rem">${svg(I.pin, '#fff', 26)} ${S.locState === 'asking' ? '위치 확인 중…' : '내 위치로 응급실 찾기'}</button>${S.locState === 'denied' ? '<p class="small" style="color:var(--redInk)">위치를 받지 못했어요. 아래 E-Gen에서 찾아 주세요.</p>' : ''}`}
+${S.locState === 'ok' ? '' : `<button class="btn solid" data-loc style="background:var(--ink);min-height:3.8rem;font-size:1.1rem">${svg(I.pin, '#fff', 26)} ${S.locState === 'asking' ? '위치 확인 중…' : '내 위치로 응급실 찾기'}</button>${S.locState === 'denied' ? '<p class="small" style="color:var(--redInk)">위치를 받지 못했어요. 아래 E-Gen에서 찾아 주세요.</p>' : ''}`}
 ${S.erState === 'loading' ? '<div class="card"><p>찾는 중이에요…</p></div>' : ''}
-${S.erState === 'done' ? (S.er.length ? `<div id="map" role="img" aria-label="지도: 내 위치와 응급실"></div>${S.er.map((p, i) => placeCard(p, i, 'var(--red)')).join('')}` : '<div class="card"><p>근처 응급실을 찾지 못했어요. 아래 E-Gen에서 찾아 주세요.</p></div>') : ''}
+${S.erState === 'done' && S.erFail ? '<div class="card" style="border-color:var(--warn)"><p><b>지도 서비스를 지금 불러오지 못했어요.</b></p><p class="small">아래 E-Gen에서 찾거나, 급하면 바로 119에 전화하세요.</p></div>' : ''}
+${S.erState === 'done' && !S.erFail ? (S.er.length ? `<div id="map" role="img" aria-label="지도: 내 위치와 응급실"></div>${S.er.map((p, i) => placeCard(p, i, 'var(--red)')).join('')}` : '<div class="card"><p>근처 응급실을 찾지 못했어요. 아래 E-Gen에서 찾아 주세요.</p></div>') : ''}
 ${ext('https://www.e-gen.or.kr/egen/search_emergency_room.do', 'go', 'background:var(--ink)', `<span><b>응급실 병상 여유 확인</b><small>응급의료포털 E-Gen · 실시간</small></span>${svg(I.arrow, '#fff')}`)}
 <p class="small">거리순 목록은 카카오맵 검색 결과예요. 응급실이 지금 환자를 받을 수 있는지는 E-Gen이나 119에서 확인하세요.</p>
-<div class="card"><h2>급하지 않다면</h2><p class="sub">밤·휴일에 문 연 병원과 약국을 전화로 물어볼 수 있어요.</p>
-<div class="grid2">${call('129', '보건복지콜센터', 'var(--blue)')}${call('120', '시도 콜센터', 'var(--green)')}</div></div>
+<div class="card"><h2>급하지 않다면</h2><p class="sub">밤·휴일에 문 연 병원과 약국은 119에 전화해서 물어봐도 알려줘요.</p>
+${call('119', '119 병원·약국 안내', 'var(--blue)')}
+${ext('https://www.e-gen.or.kr', 'go', 'background:var(--green)', `<span><b>문 연 병원·약국 찾기</b><small>응급의료포털 E-Gen</small></span>${svg(I.arrow, '#fff')}`)}</div>
 ${memoBox('emergency')}`,
 
 booking: () => {
   const B = S.bk;
-  const on = 'background:var(--brown);border-color:var(--brown);color:#fff';
   const steps = ['진료과', '날짜', '시간', '병원'];
   const bar = `<div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.3rem">${steps.map((t, i) => `<div style="text-align:center"><div style="height:.45rem;border-radius:999px;background:${i < B.step ? 'var(--brown)' : 'var(--line)'}"></div><span class="small" style="${i + 1 === B.step ? 'color:var(--brown);font-weight:700' : ''}">${i + 1}. ${t}</span></div>`).join('')}</div>`;
   const chosen = () => `<div class="card" style="border-color:var(--brown);gap:.2rem">
@@ -455,16 +453,21 @@ ${memoBox('booking')}`;
 
   if (B.step === 2) return `${head('병원 예약하기')}${bar}${chosen()}
 <h2 style="font-size:1.3rem">언제 가실 건가요?</h2>
-<div class="grid3">${bkDays().map((d, i) => `<button class="chip" style="flex-direction:column;min-height:4.4rem;gap:0" data-bk-day="${i}"><span style="font-weight:500">${d.week}</span><span style="font-size:1.2rem;font-weight:900">${d.md}</span>${i === 0 ? '<span class="small">오늘</span>' : i === 1 ? '<span class="small">내일</span>' : ''}</button>`).join('')}</div>
+<div class="grid3">${bkDays().map((d, i) => bkDayFull(i)
+    ? `<button class="chip" style="flex-direction:column;min-height:4.4rem;gap:0;opacity:.55" disabled aria-disabled="true"><span style="font-weight:500">${d.week}</span><span style="font-size:1.2rem;font-weight:900">${d.md}</span><span class="small">마감</span></button>`
+    : `<button class="chip" style="flex-direction:column;min-height:4.4rem;gap:0" data-bk-day="${i}"><span style="font-weight:500">${d.week}</span><span style="font-size:1.2rem;font-weight:900">${d.md}</span>${i === 0 ? '<span class="small">오늘</span>' : i === 1 ? '<span class="small">내일</span>' : ''}</button>`).join('')}</div>
 <p class="small">일요일은 쉬는 병원이 많아서 빼고 보여드려요.</p>
 ${backBtn}${memoBox('booking')}`;
 
+  const timeBtn = (t, i) => bkPast(B.day, i)
+    ? `<button class="chip" style="min-height:3.6rem;font-size:1.05rem;flex-direction:column;gap:0;opacity:.55" disabled aria-disabled="true"><span>${t}</span><span class="small">지난 시간</span></button>`
+    : `<button class="chip" style="min-height:3.6rem;font-size:1.05rem" data-bk-time="${i}">${t}</button>`;
   if (B.step === 3) return `${head('병원 예약하기')}${bar}${chosen()}
 <h2 style="font-size:1.3rem">몇 시에 가실 건가요?</h2>
 <p class="sub">오전</p>
-<div class="grid3">${BK_TIMES.map((t, i) => i < 3 ? `<button class="chip" style="min-height:3.6rem;font-size:1.05rem" data-bk-time="${i}">${t}</button>` : '').join('')}</div>
+<div class="grid3">${BK_TIMES.map((t, i) => i < 3 ? timeBtn(t, i) : '').join('')}</div>
 <p class="sub">오후</p>
-<div class="grid3">${BK_TIMES.map((t, i) => i >= 3 ? `<button class="chip" style="min-height:3.6rem;font-size:1.05rem" data-bk-time="${i}">${t}</button>` : '').join('')}</div>
+<div class="grid3">${BK_TIMES.map((t, i) => i >= 3 ? timeBtn(t, i) : '').join('')}</div>
 ${backBtn}${memoBox('booking')}`;
 
   if (B.step === 4) {
@@ -548,47 +551,66 @@ const render = () => {
   if ($('#map')) drawMap(page === 'emergency' ? S.er : S.results);
 };
 const go = (p) => { if (current() === p) render(); else location.hash = p === 'home' ? '' : p; window.scrollTo(0, 0); };
-window.addEventListener('hashchange', () => {
-  render(); window.scrollTo(0, 0);
+
+/* 예약 단계·약 상세 화면도 방문 기록에 남겨서 휴대폰 '뒤로' 버튼이 한 단계씩 돌아가게 해요 */
+const bkMaxStep = () => { const B = S.bk; return B.dept == null ? 1 : B.day == null ? 2 : B.time == null ? 3 : B.hosp == null ? 4 : 5; };
+const pushSub = (st) => history.pushState(st, '', location.hash || '#');
+const syncFromHistory = () => {
+  const st = history.state || {};
+  const p = current();
+  if (p === 'booking') S.bk.step = Math.min(st.bk || 1, bkMaxStep());
+  if (p === 'medicine') {
+    const sel = st.drug != null ? S.drug.list[st.drug] : null;
+    if (S.drug.sel && sel !== S.drug.sel && 'speechSynthesis' in window) speechSynthesis.cancel();
+    S.drug.sel = sel || null;
+  }
+};
+let lastNav = '';
+const onNav = () => {
+  const key = location.href + '|' + JSON.stringify(history.state);
+  if (key === lastNav) return; /* popstate와 hashchange가 함께 오면 한 번만 그려요 */
+  lastNav = key;
+  syncFromHistory(); render(); window.scrollTo(0, 0);
   const p = current();
   if (p === 'hospital' && (S.pos || S.area) && S.resultFor !== S.dept) searchPlaces();
   if (p === 'emergency' && S.pos && S.erState === 'idle') searchER();
-});
+};
+window.addEventListener('popstate', onNav);
+window.addEventListener('hashchange', onNav);
+const bkGo = (patch) => { Object.assign(S.bk, patch); pushSub({ bk: S.bk.step }); lastNav = location.href + '|' + JSON.stringify(history.state); render(); window.scrollTo(0, 0); };
 
 document.addEventListener('click', async (e) => {
   const t = e.target.closest('button, a');
   if (!t) return;
   if (t.dataset.call) {
     const n = t.dataset.call;
-    $('#callTitle').textContent = n === '119' ? '정말 119에 전화할까요?' : `${t.dataset.label}에 전화할까요?`;
-    $('#callSub').textContent = n === '119' ? '위급한 상황일 때만 눌러 주세요. 잘못 눌렀다면 "아니요"를 누르세요.' : `번호: ${n}`;
+    const sos = n === '119' && t.dataset.label === '119';
+    $('#callTitle').textContent = sos ? '정말 119에 전화할까요?' : `${t.dataset.label}에 전화할까요?`;
+    $('#callSub').textContent = sos ? '위급한 상황일 때만 눌러 주세요. 잘못 눌렀다면 "아니요"를 누르세요.' : `번호: ${n}`;
     $('#callYes').href = 'tel:' + n.replace(/[^0-9+]/g, '');
-    $('#callYes').style.background = n === '119' ? 'var(--red)' : 'var(--blue)';
+    $('#callYes').style.background = sos ? 'var(--red)' : 'var(--blue)';
     $('#callDlg').hidden = false; $('#callNo').focus();
     return;
   }
   if (t.id === 'callNo') { $('#callDlg').hidden = true; return; }
   if (t.id === 'callYes') { setTimeout(() => { $('#callDlg').hidden = true; }, 300); return; }
-  if (t.dataset.pick) S.dept = t.dataset.pick;
   if (t.dataset.go) { go(t.dataset.go); return; }
   if (t.hasAttribute('data-loc')) { S.resultFor = ''; S.erState = 'idle'; askLocation(); return; }
-  if (t.hasAttribute('data-palgong')) { usePalgong(); return; }
   if (t.id === 'areaGo') { const v = $('#area').value.trim(); if (!v) { toast('동네 이름을 적어 주세요'); return; } S.area = v; store.set('area', v); S.pos = null; S.locState = 'idle'; searchPlaces(); return; }
   if (t.dataset.dept) { S.dept = t.dataset.dept; render(); if (S.pos || S.area) searchPlaces(); return; }
   if (t.dataset.center) { S.center = t.dataset.center; S.cat = '전체'; render(); return; }
   if (t.dataset.cat) { S.cat = t.dataset.cat; render(); return; }
-  if (t.hasAttribute('data-ask')) { toast('예시 화면이에요. 실제 앱에서는 보건소로 연결돼요'); return; }
   if (t.id === 'bigBtn') { S.big = !S.big; store.set('big', S.big); document.documentElement.classList.toggle('big', S.big); render(); return; }
-  if (t.dataset.bkDept) { Object.assign(S.bk, { dept: t.dataset.bkDept, step: 2 }); render(); window.scrollTo(0, 0); return; }
-  if (t.dataset.bkDay) { Object.assign(S.bk, { day: +t.dataset.bkDay, step: 3 }); render(); window.scrollTo(0, 0); return; }
-  if (t.dataset.bkTime) { Object.assign(S.bk, { time: +t.dataset.bkTime, step: 4 }); render(); window.scrollTo(0, 0); return; }
-  if (t.dataset.bkHosp) { Object.assign(S.bk, { hosp: +t.dataset.bkHosp, step: 5 }); render(); window.scrollTo(0, 0); return; }
-  if (t.hasAttribute('data-bk-other')) { S.bk.step = 3; render(); window.scrollTo(0, 0); return; }
-  if (t.id === 'bkBack') { S.bk.step = Math.max(1, S.bk.step - 1); render(); window.scrollTo(0, 0); return; }
-  if (t.id === 'bkReset') { S.bk = { step: 1, dept: null, day: null, time: null, hosp: null }; render(); window.scrollTo(0, 0); return; }
+  /* 단계를 고르면 뒤 단계 선택은 지워서, 앞 단계를 바꾸면 처음부터 다시 고르게 해요 */
+  if (t.dataset.bkDept) { bkGo({ dept: t.dataset.bkDept, day: null, time: null, hosp: null, step: 2 }); return; }
+  if (t.dataset.bkDay) { bkGo({ day: +t.dataset.bkDay, time: null, hosp: null, step: 3 }); return; }
+  if (t.dataset.bkTime) { bkGo({ time: +t.dataset.bkTime, hosp: null, step: 4 }); return; }
+  if (t.dataset.bkHosp) { bkGo({ hosp: +t.dataset.bkHosp, step: 5 }); return; }
+  if (t.hasAttribute('data-bk-other') || t.id === 'bkBack') { history.back(); return; }
+  if (t.id === 'bkReset') { S.bk = { step: 1, dept: null, day: null, time: null, hosp: null }; history.replaceState({ bk: 1 }, '', location.hash); lastNav = ''; onNav(); return; }
   if (t.id === 'drugGo') { S.drug.q = $('#drug').value.trim(); searchDrug(); return; }
-  if (t.dataset.drug) { S.drug.sel = S.drug.list[+t.dataset.drug]; render(); window.scrollTo(0, 0); return; }
-  if (t.id === 'drugBack') { if ('speechSynthesis' in window) speechSynthesis.cancel(); S.drug.sel = null; render(); return; }
+  if (t.dataset.drug) { const i = +t.dataset.drug; S.drug.sel = S.drug.list[i]; pushSub({ drug: i }); lastNav = location.href + '|' + JSON.stringify(history.state); render(); window.scrollTo(0, 0); return; }
+  if (t.id === 'drugBack') { history.back(); return; }
   if (t.id === 'drugSpeak') { speakDrug(); return; }
   if (t.id === 'copyNotes') {
     const m = store.get('memo', {});
@@ -601,8 +623,7 @@ document.addEventListener('input', (e) => {
   const k = e.target.dataset && e.target.dataset.memo;
   if (k) { const m = store.get('memo', {}); m[k] = e.target.value; store.set('memo', m); }
 });
-render();
-if (S.area && current() === 'hospital') searchPlaces();
+onNav();
 }
 </script>
 </body>
