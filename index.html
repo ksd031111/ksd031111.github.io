@@ -297,16 +297,77 @@ const openDrugFromSug = (p) => {
   /* 상세 화면에서 '뒤로'를 누르면 이 이름으로 찾은 목록이 나와요 */
   D.sel = p; pushSub({ drug: i }); lastNav = location.href + '|' + JSON.stringify(history.state); render(); window.scrollTo(0, 0);
 };
+/* ---------- 소리로 듣기: 화면의 표를 사람이 말하듯 문장으로 바꿔서 읽어요 ---------- */
+const NAT = ['', '한', '두', '세', '네', '다섯', '여섯', '일곱', '여덟', '아홉', '열', '열한', '열두'];
+const COUNT_UNIT = '정|캡슐|포|병|알|번|시간|매|방울|팩|환|앰플';
+/* '1~2정' → '한 정에서 두 정', '8정' → '여덟 정' (세는 말은 우리말 숫자로 읽어야 자연스러워요) */
+const sayNum = (t) => String(t)
+  .replace(/(\d+)\/(\d+)\s*/g, '$2분의 $1 ') /* 1/2정 → 2분의 1 정 */
+  .replace(new RegExp(`(?<![\\d.])(\\d+)\\s*~\\s*(\\d+)\\s*(${COUNT_UNIT})`, 'g'), (s, a, b, u) => (NAT[a] && NAT[b] ? `${NAT[a]} ${u}에서 ${NAT[b]} ${u}` : `${a}에서 ${b} ${u}`))
+  .replace(new RegExp(`(?<![\\d.])(\\d+)\\s*(${COUNT_UNIT})`, 'g'), (s, a, u) => (NAT[a] ? `${NAT[a]} ${u}` : s))
+  .replace(/(\d+)\s*~\s*(\d+)/g, '$1에서 $2');
+/* 읽을 때 걸리는 괄호·기호 정리 */
+const sayClean = (t) => String(t || '').replace(/\s*\([^)]*\)/g, '').replace(/의사·약사/g, '의사나 약사').replace(/\s*[·ㆍ]\s*/g, ', ').replace(/\s+/g, ' ').trim();
+const lastJosa = (list, a, b) => { const s = list.join(', '); return josa(s, a, b); };
+const speechScript = (p) => {
+  const m = summarizeDrug(p), d = m.dose, out = [];
+  const name = sayClean(p.b || p.n);
+  out.push(`${name} 설명을 들려드릴게요.`);
+  if (m.kind) out.push(`이 약은 ${josa(sayClean(m.kind.replace(/\s*\(.*\)$/, '').replace(/·/g, ' ')), '이에요', '예요')}.`);
+  if (m.uses.length) out.push(`${sayClean(m.uses.slice(0, 5).join(', '))} 같은 때 ${d.topical ? '써요' : '먹어요'}.`);
+  else if (m.use) out.push(sayClean(m.use));
+  const verb = /바르/.test(m.kind) ? '바르세요' : /붙이/.test(m.kind) ? '붙이세요' : /넣는/.test(m.kind) ? '넣으세요' : d.topical ? '쓰세요' : '드세요';
+  const R = Object.fromEntries(d.rows.map(([k, v]) => [k, v]));
+  if (d.rows.length >= 2) {
+    const amount = [R['한 번에'] && R['한 번에'] !== '알맞은 양' ? `한 번에 ${sayNum(R['한 번에'])}씩` : R['한 번에'] ? '알맞은 양을' : '', R['하루에'] ? `하루에 ${sayNum(R['하루에'])}` : '', R['어디에'] || ''].filter(Boolean).join(', ');
+    if (amount) out.push(`${amount} ${verb}.`);
+    if (R['언제']) out.push(`${R['언제'].split(' · ').map((w) => (/만$/.test(w) ? w : w + '에')).join(', 또는 ')} ${verb}.`);
+    if (R['간격']) out.push(/마다$/.test(R['간격']) ? `${sayNum(R['간격'])} ${verb}.` : `먹고 나서 적어도 ${sayNum(R['간격'].replace(/\s*이상 띄우기$/, ''))}은 띄우세요.`);
+    if (R['하루 최대']) out.push(`하루에 ${sayNum(R['하루 최대'])}만 ${verb}. 더 ${d.topical ? '쓰면' : '먹으면'} 안 돼요.`);
+  } else if (d.fallback) out.push(sayNum(sayClean(d.fallback)));
+  if (d.note) out.push(d.note);
+  if (d.adult) out.push('이 양은 어른 기준이에요.');
+  const use = d.topical ? '쓰' : '먹', used = d.topical ? '쓴' : '먹은';
+  const checks = m.checks.length ? m.checks : [{ t: `${use}기 전에 약사에게 내가 가진 병과 먹고 있는 약을 알려 주세요.` }];
+  out.push('이제 꼭 조심할 점이에요.');
+  for (const c of checks) {
+    if (c.tags && /먹지 마세요/.test(c.t)) out.push(`${lastJosa(c.tags, '이', '가')} 있으면 이 약을 먹지 마세요.`);
+    else if (c.tags) out.push(`${lastJosa(c.tags, '이', '가')} 있으면 먹기 전에 의사나 약사와 상의하세요.`);
+    else out.push(sayClean(c.t).replace(/의사·약사/g, '의사나 약사'));
+  }
+  const stops = m.stops.map((s) => (s === '구역' ? '메스꺼움' : s));
+  out.push(stops.length ? `${used} 뒤에 ${lastJosa(stops, '이', '가')} 생기면 바로 멈추고 약사나 의사에게 물어보세요.` : `${used} 뒤에 몸이 이상하면 바로 멈추고 약사나 의사에게 물어보세요.`);
+  return out.map((s) => s.replace(/\s+/g, ' ').trim()).filter(Boolean);
+};
+/* 가장 자연스러운 한국어 목소리를 골라요 (휴대폰·컴퓨터마다 가진 목소리가 달라요) */
+const pickVoice = () => {
+  const vs = ('speechSynthesis' in window ? speechSynthesis.getVoices() : []).filter((v) => /^ko/i.test(v.lang));
+  const score = (v) => (/natural|neural|online|premium|enhanced/i.test(v.name) ? 4 : 0) + (/google/i.test(v.name) ? 3 : 0) + (/yuna|sunhi|injoon|hyunsu|heami/i.test(v.name) ? 2 : 0) + (v.localService ? 0 : 1);
+  return vs.sort((a, b) => score(b) - score(a))[0] || null;
+};
+if ('speechSynthesis' in window) speechSynthesis.getVoices(); /* 목소리 목록을 미리 불러 둬요 */
+let speakRun = 0;
+const SPEAK_ICON = '<path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/>';
+const speakBtnHTML = () => S.speaking
+  ? `${svg('<rect x="6" y="6" width="12" height="12" rx="1.5" fill="#fff"/>', '#fff', 26)} 그만 듣기`
+  : `${svg(SPEAK_ICON, '#fff', 26)} 소리로 듣기`;
+const setSpeakBtn = () => { const b = $('#drugSpeak'); if (b) { b.innerHTML = speakBtnHTML(); b.style.background = S.speaking ? 'var(--redInk)' : 'var(--blue)'; b.setAttribute('aria-pressed', S.speaking); } };
+const stopSpeak = () => { speakRun++; if ('speechSynthesis' in window) speechSynthesis.cancel(); S.speaking = false; setSpeakBtn(); };
 const speakDrug = () => {
   const p = S.drug.sel; if (!p) return;
   if (!('speechSynthesis' in window)) { toast('이 휴대폰에서는 소리 읽기가 안 돼요'); return; }
+  if (S.speaking) { stopSpeak(); return; }
   speechSynthesis.cancel();
-  const m = summarizeDrug(p);
-  const d = m.dose;
-  const how = d.rows.length >= 2 ? d.rows.map(([k, v]) => `${k} ${v}`).join('. ') : d.fallback;
-  const txt = [p.n, (m.kind ? m.kind + '이에요. ' : '') + (m.uses.length ? m.uses.slice(0, 8).join(', ') + '에 써요' : m.use), (d.topical ? '쓰는 법. ' : '먹는 법. ') + how + (d.note ? '. ' + d.note : ''), '어르신이 꼭 확인할 것. ' + m.checks.map((c) => c.t + (c.tags ? ' ' + c.tags.join(', ') : '')).join(' ')].join('. ');
-  const u = new SpeechSynthesisUtterance(txt); u.lang = 'ko-KR'; u.rate = 0.85;
-  speechSynthesis.speak(u);
+  const run = ++speakRun, voice = pickVoice(), lines = speechScript(p);
+  S.speaking = true; setSpeakBtn();
+  /* 한 문장씩 읽어요: 문장 사이에 자연스럽게 쉬고, 긴 글이 중간에 끊기는 문제도 막아요 */
+  lines.forEach((line, i) => {
+    const u = new SpeechSynthesisUtterance(line);
+    u.lang = 'ko-KR'; u.rate = 0.9; u.pitch = 1; if (voice) u.voice = voice;
+    if (i === lines.length - 1) u.onend = () => { if (run === speakRun) { S.speaking = false; setSpeakBtn(); } };
+    u.onerror = () => { if (run === speakRun && i === lines.length - 1) { S.speaking = false; setSpeakBtn(); } };
+    speechSynthesis.speak(u);
+  });
 };
 
 
@@ -416,7 +477,7 @@ const summarizeDrug = (p) => {
   if (p.i) checks.push({ t: '다른 약을 드시고 있으면 약사에게 약봉투를 꼭 보여 주세요.' });
   const stops = SYM.filter((w) => (p.s || '').includes(w)).slice(0, 5).map((w) => SYM_LABEL[w] || w);
   const dm = [p.a, p.s, p.w].join(' ').match(/(\d+\s*(?:일|주|개월))\s*(?:정도|이상|간|동안)?[^.]*?(?:복용|사용)[^.]*?(?:개선|좋아지|낫)/);
-  const duration = dm ? `${dm[1].replace(/\s/g, '')} 정도 먹어도 좋아지지 않으면 멈추고 의사·약사와 상의하세요.` : '';
+  const duration = dm ? `${dm[1].replace(/\s/g, '')} 정도 ${/바르|바릅|문지|도포|붙|부착|점안|뿌리|분무/.test(p.u || '') ? '써도' : '먹어도'} 좋아지지 않으면 멈추고 의사·약사와 상의하세요.` : '';
   const uses = easyUses(p.e);
   return { kind: drugKind(p), uses, use: uses.length ? '' : easyText(splitS(p.e)[0] || ''), dose: easyDose(p.u), checks, stops, duration };
 };
@@ -558,7 +619,7 @@ medicine: () => {
     return `<div class="top"><button class="back" id="drugBack" aria-label="검색 결과로">${svg(I.back, 'currentColor', 26)}</button><h1 style="font-size:1.35rem">${esc(p.n)}</h1></div>
 <p class="sub">${esc(p.c)} · 약국에서 사는 약(일반의약품)</p>
 ${p.m ? `<figure style="margin:0;background:#fff;border:2px solid var(--line);border-radius:1.1rem;padding:.6rem;text-align:center"><img src="${esc(p.m)}" alt="${esc(p.n)} 사진" referrerpolicy="no-referrer" onerror="this.closest('figure').remove()" style="max-width:100%;max-height:220px;object-fit:contain"><figcaption class="small">약 모양 사진 (식약처)</figcaption></figure>` : ''}
-<button class="btn solid" id="drugSpeak" style="background:var(--blue);min-height:3.6rem;font-size:1.1rem">${svg('<path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/>', '#fff', 26)} 소리로 듣기</button>
+<button class="btn solid" id="drugSpeak" aria-pressed="${!!S.speaking}" style="background:${S.speaking ? 'var(--redInk)' : 'var(--blue)'};min-height:3.6rem;font-size:1.1rem">${speakBtnHTML()}</button>
 <div class="card" style="border-color:var(--blue)">
 <h2 style="color:var(--blue)">${m.dose.topical ? '어디에 쓰는 약인가요?' : '어디에 먹는 약인가요?'}</h2>
 ${m.kind ? `<p style="font-size:1.3rem;font-weight:900">${esc(m.kind)}</p>` : ''}
@@ -575,11 +636,11 @@ ${m.dose.adult ? '<p class="small">어른(성인) 기준이에요. 아이는 양
 </div>
 <div class="card" style="background:var(--warnBg);border-color:var(--warn)">
 <h2 style="color:var(--warn)">어르신이 꼭 확인할 것</h2>
-${(m.checks.length ? m.checks : [{ t: '먹기 전에 약사에게 내가 가진 병과 먹고 있는 약을 알려 주세요.' }]).map((c) => `<div style="display:flex;gap:.5rem;align-items:flex-start"><span style="flex:none;margin-top:.15rem">${ck}</span><div><p style="font-size:1.08rem;line-height:1.55;${c.strong ? 'font-weight:700' : ''}">${esc(c.t)}</p>${c.tags ? `<div style="display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.35rem">${c.tags.map((g) => `<span class="badge" style="background:var(--card);color:var(--ink);border:1px solid var(--warn);font-size:.9rem">${esc(g)}</span>`).join('')}</div>` : ''}</div></div>`).join('')}
+${(m.checks.length ? m.checks : [{ t: `${m.dose.topical ? '쓰' : '먹'}기 전에 약사에게 내가 가진 병과 먹고 있는 약을 알려 주세요.` }]).map((c) => `<div style="display:flex;gap:.5rem;align-items:flex-start"><span style="flex:none;margin-top:.15rem">${ck}</span><div><p style="font-size:1.08rem;line-height:1.55;${c.strong ? 'font-weight:700' : ''}">${esc(c.t)}</p>${c.tags ? `<div style="display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.35rem">${c.tags.map((g) => `<span class="badge" style="background:var(--card);color:var(--ink);border:1px solid var(--warn);font-size:.9rem">${esc(g)}</span>`).join('')}</div>` : ''}</div></div>`).join('')}
 </div>
 <div class="card" style="border-color:var(--redInk)">
 <h2 style="color:var(--redInk)">이럴 땐 바로 멈추고 약사·의사에게</h2>
-${m.stops.length ? `<p style="font-size:1.08rem;line-height:1.55">먹은 뒤에 <b>${esc(m.stops.join(', '))}</b> 같은 증상이 생길 때</p>` : '<p style="font-size:1.08rem;line-height:1.55">먹은 뒤에 몸에 이상한 증상이 생길 때</p>'}
+${m.stops.length ? `<p style="font-size:1.08rem;line-height:1.55">${m.dose.topical ? '쓴' : '먹은'} 뒤에 <b>${esc(m.stops.join(', '))}</b> 같은 증상이 생길 때</p>` : `<p style="font-size:1.08rem;line-height:1.55">${m.dose.topical ? '쓴' : '먹은'} 뒤에 몸에 이상한 증상이 생길 때</p>`}
 ${m.duration ? `<p style="font-size:1.08rem;line-height:1.55">${esc(m.duration)}</p>` : ''}
 </div>
 <details class="card"><summary style="font-weight:700;cursor:pointer;min-height:2.6rem;display:flex;align-items:center">식약처 설명서 원문 전체 보기</summary>
@@ -760,7 +821,7 @@ const syncFromHistory = () => {
   if (p === 'booking') S.bk.step = Math.min(st.bk || 1, bkMaxStep());
   if (p === 'medicine') {
     const sel = st.drug != null ? S.drug.list[st.drug] : null;
-    if (S.drug.sel && sel !== S.drug.sel && 'speechSynthesis' in window) speechSynthesis.cancel();
+    if (S.drug.sel && sel !== S.drug.sel) stopSpeak();
     S.drug.sel = sel || null;
   }
 };
@@ -769,13 +830,15 @@ const onNav = () => {
   const key = location.href + '|' + JSON.stringify(history.state);
   if (key === lastNav) return; /* popstate와 hashchange가 함께 오면 한 번만 그려요 */
   lastNav = key;
-  syncFromHistory(); render(); window.scrollTo(0, 0);
   const p = current();
+  if (p !== 'medicine' && S.speaking) stopSpeak(); /* 다른 화면으로 가면 읽기를 멈춰요 */
+  syncFromHistory(); render(); window.scrollTo(0, 0);
   if (p === 'medicine') loadDrugs().catch(() => {}); /* 미리 받아 두면 적자마자 추천이 나와요 */
   if (p === 'hospital' && (S.pos || S.area) && S.resultFor !== S.dept) searchPlaces();
   if (p === 'emergency' && S.pos && S.erState === 'idle') searchER();
 };
 window.addEventListener('popstate', onNav);
+window.addEventListener('pagehide', () => { if (S.speaking) stopSpeak(); }); /* 창을 닫거나 다른 사이트로 가도 멈춰요 */
 window.addEventListener('hashchange', onNav);
 const bkGo = (patch) => { Object.assign(S.bk, patch); pushSub({ bk: S.bk.step }); lastNav = location.href + '|' + JSON.stringify(history.state); render(); window.scrollTo(0, 0); };
 
