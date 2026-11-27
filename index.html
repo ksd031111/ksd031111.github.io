@@ -40,6 +40,10 @@ button,a.btn{font:inherit;cursor:pointer;text-decoration:none}
 .solid{border:0;color:#fff}
 .go{display:flex;align-items:center;justify-content:space-between;gap:.6rem;border-radius:1rem;padding:.9rem 1rem;min-height:4rem;color:#fff;text-decoration:none;border:0;width:100%;text-align:left}
 .go svg,.sos svg,.btn svg{flex:none}
+#drugSug{background:var(--card);border:2px solid var(--blue);border-radius:.8rem;overflow:hidden;margin-top:-.4rem}
+.sugItem{display:flex;flex-direction:column;align-items:flex-start;gap:.1rem;width:100%;text-align:left;font:inherit;color:var(--ink);background:none;border:0;border-top:1px solid var(--line);padding:.7rem .8rem;min-height:3.4rem;cursor:pointer}
+.sugItem:first-of-type{border-top:0}.sugItem b{font-size:1.05rem;line-height:1.35}
+.sugItem:hover,.sugItem:active{background:var(--blueBg)}
 .go b{display:block;font-size:1.1rem;font-weight:900}.go small{font-size:.85rem;opacity:.9}
 input,textarea{font:inherit;font-size:max(16px,1.1rem);color:var(--ink);background:var(--card);border:2px solid var(--blue);border-radius:.8rem;padding:.7rem .9rem;width:100%}
 textarea{min-height:6rem;resize:vertical;border-color:var(--line)}
@@ -185,25 +189,113 @@ ${p.phone ? `<button class="btn" data-call="${esc(p.phone)}" data-label="${esc(p
 let drugDB = null;
 const normName = (t) => String(t || '').replace(/\s+/g, '').toLowerCase();
 const shortText = (t) => { if (!t) return ''; const parts = t.split(/(?<=[.다요])\s+/); const s2 = parts.slice(0, 2).join(' '); return s2.length > 160 ? s2.slice(0, 150) + '…' : s2; };
+/* 한글을 자모로 풀어요. '타이렌'처럼 치는 중인 글자도 '타이레놀'에 맞고, 오타가 얼마나 다른지도 셀 수 있어요 */
+const CHO = 'ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ', JUNG = 'ㅏㅐㅑㅒㅓㅔㅕㅖㅗㅘㅙㅚㅛㅜㅝㅞㅟㅠㅡㅢㅣ';
+const JONG = ['', 'ㄱ', 'ㄲ', 'ㄳ', 'ㄴ', 'ㄵ', 'ㄶ', 'ㄷ', 'ㄹ', 'ㄺ', 'ㄻ', 'ㄼ', 'ㄽ', 'ㄾ', 'ㄿ', 'ㅀ', 'ㅁ', 'ㅂ', 'ㅄ', 'ㅅ', 'ㅆ', 'ㅇ', 'ㅈ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ'];
+const SPLIT = { 'ㅘ': 'ㅗㅏ', 'ㅙ': 'ㅗㅐ', 'ㅚ': 'ㅗㅣ', 'ㅝ': 'ㅜㅓ', 'ㅞ': 'ㅜㅔ', 'ㅟ': 'ㅜㅣ', 'ㅢ': 'ㅡㅣ', 'ㄳ': 'ㄱㅅ', 'ㄵ': 'ㄴㅈ', 'ㄶ': 'ㄴㅎ', 'ㄺ': 'ㄹㄱ', 'ㄻ': 'ㄹㅁ', 'ㄼ': 'ㄹㅂ', 'ㄽ': 'ㄹㅅ', 'ㄾ': 'ㄹㅌ', 'ㄿ': 'ㄹㅍ', 'ㅀ': 'ㄹㅎ', 'ㅄ': 'ㅂㅅ' };
+const jamo = (t) => {
+  let o = '';
+  for (const ch of t) {
+    const c = ch.charCodeAt(0) - 0xAC00;
+    const parts = c >= 0 && c < 11172 ? CHO[Math.floor(c / 588)] + JUNG[Math.floor((c % 588) / 28)] + JONG[c % 28] : ch;
+    for (const x of parts) o += SPLIT[x] || x;
+  }
+  return o;
+};
+/* 상자에 크게 적힌 이름만 남겨요: '타이레놀정500밀리그람(아세트아미노펜)' → '타이레놀정' */
+const baseName = (n) => n.replace(/\(.*?\)/g, '').replace(/[()]/g, '').replace(/[\d.]+\s*(%|mg|밀리|그램|그람|정|캡슐|ml|mL).*$/i, '').replace(/\d.*$/, '').trim() || n;
+let drugLoading = null;
+const loadDrugs = () => drugLoading || (drugLoading = (async () => {
+  const r = await fetch('drugs.json', { cache: 'no-cache' });
+  if (!r.ok) throw new Error('nodata');
+  const j = await r.json();
+  drugDB = j.items.map((p) => { const k = normName(p.n); const b = baseName(p.n); return Object.assign(p, { k, j: jamo(k), b, bj: jamo(normName(b)) }); });
+  S.drug.meta = j.updated || '';
+  return drugDB;
+})().catch((e) => { drugLoading = null; throw e; }));
+/* 이름에 들어 있는 약: 앞부분이 같은 약 → 중간에 들어 있는 약 순서, 같은 순위면 이름이 짧은 것 먼저 */
+const matchDrugs = (q) => {
+  const qk = normName(q), qj = jamo(qk); if (!qk) return [];
+  const starts = [], has = [];
+  for (const p of drugDB) { if (p.k.startsWith(qk) || p.j.startsWith(qj)) starts.push(p); else if (p.k.includes(qk) || p.j.includes(qj)) has.push(p); }
+  const byLen = (a, b) => a.n.length - b.n.length;
+  return starts.sort(byLen).concat(has.sort(byLen));
+};
+/* 오타 찾기: 자모 기준으로 몇 글자나 다른지 세서(편집 거리), 앞부분이 비슷한 이름을 골라요 */
+const prefDist = (q, t) => { /* q가 t의 앞부분과 가장 비슷할 때 몇 글자(자모)가 다른지 */
+  let prev = Array.from({ length: t.length + 1 }, (_, k) => k), cur = new Array(t.length + 1);
+  for (let i = 1; i <= q.length; i++) {
+    cur[0] = i;
+    for (let k = 1; k <= t.length; k++) cur[k] = Math.min(prev[k] + 1, cur[k - 1] + 1, prev[k - 1] + (q[i - 1] === t[k - 1] ? 0 : 1));
+    [prev, cur] = [cur, prev];
+  }
+  return Math.min(...prev);
+};
+const noNum = (t) => t.replace(/[\d.%\-+:]/g, ''); /* '8시간', '500' 같은 숫자는 빼고 비교해요 */
+const fuzzyDrugs = (q) => {
+  const qj = jamo(noNum(normName(q)));
+  if (qj.length < 3) return [];
+  const limit = Math.max(1, Math.floor(qj.length / 3));
+  const best = new Map();
+  const tryName = (name, nj) => {
+    if (best.has(name)) return;
+    const d = prefDist(qj, nj);
+    /* 차이가 같으면 적은 글자 수와 길이가 비슷한 이름을 먼저 보여줘요 */
+    if (d <= limit) best.set(name, d + Math.abs(nj.length - qj.length) / 100);
+  };
+  for (const p of drugDB) {
+    tryName(p.b, p.bj); /* 짧은 이름 '타이레놀' */
+    if (!p.np) { p.np = p.n.replace(/\(.*?\)/g, '').replace(/[()]/g, '').trim(); p.npj = jamo(noNum(normName(p.np))); }
+    if (p.np !== p.b) tryName(p.np, p.npj); /* 전체 이름 '타이레놀8시간이알서방정' */
+  }
+  return [...best.entries()].sort((a, b) => a[1] - b[1]).slice(0, 4).map((e) => e[0]);
+};
 const searchDrug = async () => {
   const D = S.drug; const q = normName(D.q);
   if (!q) { toast('약 이름을 적어 주세요'); return; }
   store.set('drug', D.q);
-  D.sel = null;
+  D.sel = null; hideSug();
   if (!drugDB) {
     D.state = 'loading'; render();
-    try {
-      const r = await fetch('drugs.json', { cache: 'no-cache' });
-      if (!r.ok) throw new Error('nodata');
-      const j = await r.json();
-      drugDB = j.items.map((p) => Object.assign(p, { k: normName(p.n) }));
-      D.meta = j.updated || '';
-    } catch (e) { D.state = 'nodata'; render(); return; }
+    try { await loadDrugs(); } catch (e) { D.state = 'nodata'; render(); return; }
   }
-  const starts = [], has = [];
-  for (const p of drugDB) { if (p.k.startsWith(q)) starts.push(p); else if (p.k.includes(q)) has.push(p); }
-  D.list = starts.concat(has);
+  D.list = matchDrugs(D.q);
+  D.fuzzy = D.list.length ? [] : fuzzyDrugs(D.q);
   D.state = 'done'; render();
+};
+/* 적는 동안 바로 아래에 비슷한 약 이름을 보여줘요 (화면 전체를 다시 그리지 않아 글자 입력이 끊기지 않아요) */
+let sugTimer = 0;
+const hideSug = () => { const box = $('#drugSug'); if (box) { box.innerHTML = ''; box.hidden = true; } };
+const updateSug = async () => {
+  const box = $('#drugSug'), input = $('#drug');
+  if (!box || !input) return;
+  const v = input.value.trim();
+  if (!normName(v)) { hideSug(); return; }
+  if (!drugDB) {
+    box.hidden = false; box.innerHTML = '<p class="small" style="padding:.6rem .8rem">약 목록을 불러오는 중이에요…</p>';
+    try { await loadDrugs(); } catch (e) { hideSug(); return; }
+    if (input.value.trim() !== v) return;
+  }
+  const hits = matchDrugs(v).slice(0, 6);
+  S.drug.sug = hits;
+  let html = '';
+  if (hits.length) {
+    html = `<p class="small" style="padding:.5rem .8rem 0">이 약을 찾으세요? 누르면 바로 보여드려요.</p>` + hits.map((p, i) => `<button type="button" class="sugItem" data-sug="${i}"><b>${esc(p.n)}</b><span class="small">${esc(p.c)}</span></button>`).join('');
+  } else {
+    const fz = normName(v).length >= 2 ? fuzzyDrugs(v) : [];
+    S.drug.sugFuzzy = fz;
+    if (fz.length) html = `<p style="padding:.6rem .8rem 0;font-weight:700;color:var(--warn)">혹시 이 약을 찾으셨나요?</p>` + fz.map((b, i) => `<button type="button" class="sugItem" data-fuzzy-sug="${i}"><b>${esc(b)}</b></button>`).join('');
+  }
+  box.innerHTML = html; box.hidden = !html;
+};
+const openDrugFromSug = (p) => {
+  const D = S.drug;
+  D.q = $('#drug').value.trim(); store.set('drug', D.q);
+  D.list = matchDrugs(D.q); D.fuzzy = [];
+  let i = D.list.indexOf(p); if (i < 0) { D.list.unshift(p); i = 0; }
+  D.state = 'done'; hideSug();
+  /* 상세 화면에서 '뒤로'를 누르면 이 이름으로 찾은 목록이 나와요 */
+  D.sel = p; pushSub({ drug: i }); lastNav = location.href + '|' + JSON.stringify(history.state); render(); window.scrollTo(0, 0);
 };
 const speakDrug = () => {
   const p = S.drug.sel; if (!p) return;
@@ -394,12 +486,15 @@ ${memoBox('medicine')}`;
   }
   return `${head('약 정보 찾기')}
 <label for="drug">약 이름을 적어 주세요</label>
-<div style="display:flex;gap:.5rem"><input id="drug" type="search" autocomplete="off" placeholder="예: 약봉투나 상자에 적힌 이름" value="${esc(D.q)}"><button class="btn solid" id="drugGo" style="background:var(--blue);flex:none;width:4.5rem">찾기</button></div>
-<p class="small">이름 일부만 적어도 돼요. 띄어쓰기는 신경 쓰지 않아도 돼요.</p>
+<div style="display:flex;gap:.5rem"><input id="drug" type="search" autocomplete="off" placeholder="예: 약봉투나 상자에 적힌 이름" value="${esc(D.q)}" aria-controls="drugSug"><button class="btn solid" id="drugGo" style="background:var(--blue);flex:none;width:4.5rem">찾기</button></div>
+<div id="drugSug" hidden aria-live="polite"></div>
+<p class="small">두세 글자만 적어도 비슷한 약 이름이 아래에 나와요. 띄어쓰기는 신경 쓰지 않아도 돼요.</p>
 ${D.state === 'loading' ? '<div class="card"><p>약 정보를 불러오는 중이에요…</p></div>' : ''}
 ${D.state === 'nodata' ? '<div class="card" style="border-color:var(--warn)"><p>약 정보가 아직 준비되지 않았어요.</p><p class="small">관리자: GitHub의 Actions에서 "약 정보 업데이트"를 실행해 주세요.</p></div>' : ''}
 ${D.state === 'done' ? (D.list.length ? `<p class="sub">${D.list.length >= 20 ? '20개 이상 찾았어요. 이름을 더 적으면 줄어들어요.' : D.list.length + '개 찾았어요. 눌러서 자세히 보세요.'}</p>
-${D.list.slice(0, 20).map((p, i) => `<button class="card" data-drug="${i}" style="text-align:left;font:inherit;color:inherit;cursor:pointer;flex-direction:row;align-items:center;justify-content:space-between"><span style="display:flex;gap:.7rem;align-items:center">${p.m ? `<img src="${esc(p.m)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" style="width:4.2rem;height:3rem;object-fit:contain;border-radius:.5rem;background:#fff;border:1px solid var(--line);flex:none">` : ''}<span><b style="font-size:1.1rem">${esc(p.n)}</b><br><span class="small">${esc(p.c)}</span></span></span>${svg(I.arrow, 'var(--blue)')}</button>`).join('')}` : `<div class="card"><p><b>'${esc(D.q)}'</b>을(를) 찾지 못했어요.</p><p class="small">여기에는 약국에서 사는 일반의약품만 있어요. 병원에서 처방받은 약은 약봉투의 설명을 보거나 약사에게 물어보세요.</p></div>`) : ''}
+${D.list.slice(0, 20).map((p, i) => `<button class="card" data-drug="${i}" style="text-align:left;font:inherit;color:inherit;cursor:pointer;flex-direction:row;align-items:center;justify-content:space-between"><span style="display:flex;gap:.7rem;align-items:center">${p.m ? `<img src="${esc(p.m)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" style="width:4.2rem;height:3rem;object-fit:contain;border-radius:.5rem;background:#fff;border:1px solid var(--line);flex:none">` : ''}<span><b style="font-size:1.1rem">${esc(p.n)}</b><br><span class="small">${esc(p.c)}</span></span></span>${svg(I.arrow, 'var(--blue)')}</button>`).join('')}` : `${D.fuzzy && D.fuzzy.length ? `<div class="card" style="border-color:var(--warn);background:var(--warnBg)"><h2 style="color:var(--warn)">혹시 이 약을 찾으셨나요?</h2><p class="small" style="color:var(--ink)"><b>'${esc(D.q)}'</b>${josa(D.q, '과', '와').slice(D.q.length)} 이름이 비슷한 약이에요. 맞는 것을 누르세요.</p>
+${D.fuzzy.map((b, i) => `<button class="btn" data-fuzzy="${i}" style="min-height:3.4rem;font-size:1.1rem;justify-content:space-between;text-align:left;border-color:var(--warn)"><span>${esc(b)}</span>${svg(I.arrow, 'var(--warn)', 22)}</button>`).join('')}</div>` : ''}
+<div class="card"><p><b>'${esc(D.q)}'</b>${D.fuzzy && D.fuzzy.length ? josa(D.q, '이라는', '라는').slice(D.q.length) + ' 이름은' : josa(D.q, '을', '를').slice(D.q.length)} 찾지 못했어요.</p><p class="small">여기에는 약국에서 사는 일반의약품만 있어요. 병원에서 처방받은 약은 약봉투의 설명을 보거나 약사에게 물어보세요.</p></div>`) : ''}
 ${D.state === 'idle' ? `<div class="card"><h2>이런 내용을 쉽게 알려드려요</h2>
 <p>어디에 먹나요 · 어떻게 먹나요 · 꼭 조심할 점 · 같이 먹으면 안 되는 것 · 보관법</p>
 <p class="small">식품의약품안전처 'e약은요' 정보예요. 약국에서 사는 일반의약품만 찾을 수 있어요.</p></div>` : ''}
@@ -572,6 +667,7 @@ const onNav = () => {
   lastNav = key;
   syncFromHistory(); render(); window.scrollTo(0, 0);
   const p = current();
+  if (p === 'medicine') loadDrugs().catch(() => {}); /* 미리 받아 두면 적자마자 추천이 나와요 */
   if (p === 'hospital' && (S.pos || S.area) && S.resultFor !== S.dept) searchPlaces();
   if (p === 'emergency' && S.pos && S.erState === 'idle') searchER();
 };
@@ -609,6 +705,12 @@ document.addEventListener('click', async (e) => {
   if (t.hasAttribute('data-bk-other') || t.id === 'bkBack') { history.back(); return; }
   if (t.id === 'bkReset') { S.bk = { step: 1, dept: null, day: null, time: null, hosp: null }; history.replaceState({ bk: 1 }, '', location.hash); lastNav = ''; onNav(); return; }
   if (t.id === 'drugGo') { S.drug.q = $('#drug').value.trim(); searchDrug(); return; }
+  if (t.dataset.sug) { const p = (S.drug.sug || [])[+t.dataset.sug]; if (p) openDrugFromSug(p); return; }
+  if (t.dataset.fuzzySug || t.dataset.fuzzy) { /* 비슷한 이름을 누르면 그 이름으로 다시 찾아요 */
+    const b = t.dataset.fuzzy ? S.drug.fuzzy[+t.dataset.fuzzy] : (S.drug.sugFuzzy || [])[+t.dataset.fuzzySug];
+    if (b) { S.drug.q = b; searchDrug(); window.scrollTo(0, 0); }
+    return;
+  }
   if (t.dataset.drug) { const i = +t.dataset.drug; S.drug.sel = S.drug.list[i]; pushSub({ drug: i }); lastNav = location.href + '|' + JSON.stringify(history.state); render(); window.scrollTo(0, 0); return; }
   if (t.id === 'drugBack') { history.back(); return; }
   if (t.id === 'drugSpeak') { speakDrug(); return; }
@@ -620,6 +722,7 @@ document.addEventListener('click', async (e) => {
 });
 document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.id === 'area') $('#areaGo').click(); if (e.key === 'Enter' && e.target.id === 'drug') { e.preventDefault(); $('#drugGo').click(); } });
 document.addEventListener('input', (e) => {
+  if (e.target.id === 'drug') { clearTimeout(sugTimer); sugTimer = setTimeout(updateSug, 150); return; }
   const k = e.target.dataset && e.target.dataset.memo;
   if (k) { const m = store.get('memo', {}); m[k] = e.target.value; store.set('memo', m); }
 });
