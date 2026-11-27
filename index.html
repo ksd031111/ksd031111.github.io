@@ -152,7 +152,7 @@ const searchER = async () => {
   } catch (e) { S.er = []; S.erState = 'done'; S.erFail = true; }
   render();
 };
-const fmtDist = (m) => { m = +m; if (!m && m !== 0) return ''; const walk = Math.max(1, Math.round(m / 60)); const d = m < 1000 ? `${m}m` : `${(m / 1000).toFixed(1)}km`; return m <= 2000 ? `걸어서 약 ${walk}분 · ${d}` : `${d}`; };
+const fmtDist = (m) => { if (m === '' || m == null) return ''; /* 동네 이름으로 찾으면 거리가 없어요 */ m = +m; if (!m && m !== 0) return ''; const walk = Math.max(1, Math.round(m / 60)); const d = m < 1000 ? `${m}m` : `${(m / 1000).toFixed(1)}km`; return m <= 2000 ? `걸어서 약 ${walk}분 · ${d}` : `${d}`; };
 const drawMap = async (list) => {
   const box = $('#map'); if (!box) return;
   try {
